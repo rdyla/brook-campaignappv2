@@ -3,8 +3,6 @@ import UploadView from "./components/UploadView";
 import PreviewTable from "./components/PreviewTable";
 import ResultsView from "./components/ResultsView";
 import CleanupView from "./components/CleanupView";
-import ApiHistory from "./components/ApiHistory";
-import { useApiHistory } from "./hooks/useApiHistory";
 import type {
   CampaignRow,
   ParseError,
@@ -30,13 +28,13 @@ export default function App() {
   const [currentRun, setCurrentRun] = useState<BatchRun | null>(null);
   const [batchError, setBatchError] = useState<string | null>(null);
 
-  const { api, history: apiHistory, clear: clearApiHistory } = useApiHistory();
-
   async function fetchCatalog() {
     setCatalogLoading(true);
     setCatalogError(null);
     try {
-      const data = (await api("/api/catalog", { method: "GET" })) as Catalog;
+      const r = await fetch("/api/catalog");
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = (await r.json()) as Catalog;
       setCatalog(data);
     } catch (err) {
       setCatalogError((err as Error).message);
@@ -59,11 +57,13 @@ export default function App() {
     setBatchError(null);
 
     try {
-      const result = (await api("/api/campaigns/batch", {
+      const r = await fetch("/api/campaigns/batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(req),
-      })) as BatchResult;
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const result = (await r.json()) as BatchResult;
 
       const run: BatchRun = {
         id: crypto.randomUUID(),
@@ -190,7 +190,7 @@ export default function App() {
 
         {view === "cleanup" && <CleanupView />}
 
-        <ApiHistory items={apiHistory} onClear={clearApiHistory} />
+
       </main>
     </div>
   );
