@@ -1,66 +1,197 @@
-// src/App.tsx
-
 import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import viteLogo from "/vite.svg";
-import cloudflareLogo from "./assets/Cloudflare_Logo.svg";
-import honoLogo from "./assets/hono.svg";
-import "./App.css";
+import UploadView from "./components/UploadView";
+import PreviewTable from "./components/PreviewTable";
+import ResultsView from "./components/ResultsView";
+import CleanupView from "./components/CleanupView";
+import ApiHistory from "./components/ApiHistory";
+import { useApiHistory } from "./hooks/useApiHistory";
+import type {
+  CampaignRow,
+  ParseError,
+  BatchRequest,
+  BatchResult,
+  BatchRun,
+  Catalog,
+} from "./types";
 
-function App() {
-	const [count, setCount] = useState(0);
-	const [name, setName] = useState("unknown");
+type View = "upload" | "preview" | "processing" | "results" | "cleanup";
 
-	return (
-		<>
-			<div>
-				<a href="https://vite.dev" target="_blank">
-					<img src={viteLogo} className="logo" alt="Vite logo" />
-				</a>
-				<a href="https://react.dev" target="_blank">
-					<img src={reactLogo} className="logo react" alt="React logo" />
-				</a>
-				<a href="https://hono.dev/" target="_blank">
-					<img src={honoLogo} className="logo cloudflare" alt="Hono logo" />
-				</a>
-				<a href="https://workers.cloudflare.com/" target="_blank">
-					<img
-						src={cloudflareLogo}
-						className="logo cloudflare"
-						alt="Cloudflare logo"
-					/>
-				</a>
-			</div>
-			<h1>Vite + React + Hono + Cloudflare</h1>
-			<div className="card">
-				<button
-					onClick={() => setCount((count) => count + 1)}
-					aria-label="increment"
-				>
-					count is {count}
-				</button>
-				<p>
-					Edit <code>src/App.tsx</code> and save to test HMR
-				</p>
-			</div>
-			<div className="card">
-				<button
-					onClick={() => {
-						fetch("/api/")
-							.then((res) => res.json() as Promise<{ name: string }>)
-							.then((data) => setName(data.name));
-					}}
-					aria-label="get name"
-				>
-					Name from API is: {name}
-				</button>
-				<p>
-					Edit <code>worker/index.ts</code> to change the name
-				</p>
-			</div>
-			<p className="read-the-docs">Click on the logos to learn more</p>
-		</>
-	);
+export default function App() {
+  const [view, setView] = useState<View>("upload");
+  const [rows, setRows] = useState<CampaignRow[]>([]);
+  const [parseErrors, setParseErrors] = useState<ParseError[]>([]);
+  const [filename, setFilename] = useState("");
+
+  const [catalog, setCatalog] = useState<Catalog | null>(null);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+
+  const [batchHistory, setBatchHistory] = useState<BatchRun[]>([]);
+  const [currentRun, setCurrentRun] = useState<BatchRun | null>(null);
+  const [batchError, setBatchError] = useState<string | null>(null);
+
+  const { api, history: apiHistory, clear: clearApiHistory } = useApiHistory();
+
+  async function fetchCatalog() {
+    setCatalogLoading(true);
+    setCatalogError(null);
+    try {
+      const data = (await api("/api/catalog", { method: "GET" })) as Catalog;
+      setCatalog(data);
+    } catch (err) {
+      setCatalogError((err as Error).message);
+    } finally {
+      setCatalogLoading(false);
+    }
+  }
+
+  function handleParsed(parsed: CampaignRow[], errors: ParseError[], name: string) {
+    setRows(parsed);
+    setParseErrors(errors);
+    setFilename(name);
+    setView("preview");
+    // Kick off catalog fetch immediately so dropdowns are ready
+    if (!catalog) fetchCatalog();
+  }
+
+  async function handleConfirm(req: BatchRequest) {
+    setView("processing");
+    setBatchError(null);
+
+    try {
+      const result = (await api("/api/campaigns/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(req),
+      })) as BatchResult;
+
+      const run: BatchRun = {
+        id: crypto.randomUUID(),
+        filename,
+        result,
+      };
+
+      setBatchHistory((prev) => [run, ...prev]);
+      setCurrentRun(run);
+      setView("results");
+    } catch (err) {
+      setBatchError((err as Error).message);
+      setView("preview");
+    }
+  }
+
+  function handleReset() {
+    setRows([]);
+    setParseErrors([]);
+    setFilename("");
+    setBatchError(null);
+    setView("upload");
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-100">
+      <header className="bg-white border-b border-slate-200 sticky top-0 z-10">
+        <div className="max-w-6xl mx-auto px-6 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-slate-800 font-semibold text-base">
+              Zoom CC · Campaign Batch Creator
+            </span>
+            {view !== "upload" && (
+              <>
+                <span className="text-slate-300">·</span>
+                <span className="text-sm text-slate-500 font-mono">{filename}</span>
+              </>
+            )}
+          </div>
+          <nav className="flex items-center gap-1 text-xs">
+            <button
+              onClick={() => setView("upload")}
+              className={`px-3 py-1.5 rounded ${
+                view === "upload" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"
+              }`}
+            >
+              Upload
+            </button>
+            {rows.length > 0 && (
+              <button
+                onClick={() => setView("preview")}
+                className={`px-3 py-1.5 rounded ${
+                  view === "preview" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"
+                }`}
+              >
+                Configure
+              </button>
+            )}
+            {batchHistory.length > 0 && (
+              <button
+                onClick={() => { setCurrentRun(batchHistory[0]); setView("results"); }}
+                className={`px-3 py-1.5 rounded ${
+                  view === "results" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"
+                }`}
+              >
+                Results
+              </button>
+            )}
+            <button
+              onClick={() => setView("cleanup")}
+              className={`px-3 py-1.5 rounded ${
+                view === "cleanup" ? "bg-red-600 text-white" : "text-slate-600 hover:bg-slate-100"
+              }`}
+            >
+              Cleanup
+            </button>
+          </nav>
+        </div>
+      </header>
+
+      <main className="max-w-6xl mx-auto px-6 py-8">
+        {view === "upload" && <UploadView onParsed={handleParsed} />}
+
+        {view === "preview" && (
+          <>
+            {batchError && (
+              <div className="mb-4 bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-700">
+                Batch failed: {batchError}
+              </div>
+            )}
+            <PreviewTable
+              rows={rows}
+              errors={parseErrors}
+              filename={filename}
+              catalog={catalog}
+              catalogLoading={catalogLoading}
+              catalogError={catalogError}
+              onCatalogRetry={fetchCatalog}
+              onConfirm={handleConfirm}
+              onBack={handleReset}
+            />
+          </>
+        )}
+
+        {view === "processing" && (
+          <div className="flex flex-col items-center justify-center min-h-[50vh] gap-4">
+            <div className="w-10 h-10 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin" />
+            <p className="text-slate-600 font-medium">
+              Creating {rows.length} campaign{rows.length !== 1 ? "s" : ""}…
+            </p>
+            <p className="text-slate-400 text-sm text-center max-w-sm">
+              Creating contact list and campaign record for each row.
+            </p>
+          </div>
+        )}
+
+        {view === "results" && currentRun && (
+          <ResultsView
+            currentRun={currentRun}
+            history={batchHistory}
+            onReset={handleReset}
+          />
+        )}
+
+        {view === "cleanup" && <CleanupView />}
+
+        <ApiHistory items={apiHistory} onClear={clearApiHistory} />
+      </main>
+    </div>
+  );
 }
-
-export default App;
