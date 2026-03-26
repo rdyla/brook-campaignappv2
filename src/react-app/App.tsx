@@ -92,7 +92,9 @@ export default function App() {
     <div className="min-h-screen bg-slate-100">
       <header className="bg-white border-b border-slate-200 sticky top-0 z-10">
         <div className="max-w-6xl mx-auto px-6 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
+            <img src="/packetfusionlogo.png" alt="Packet Fusion" className="h-7 w-auto" />
+            <span className="text-slate-300">|</span>
             <span className="text-slate-800 font-semibold text-base">
               Zoom CC · Campaign Batch Creator
             </span>
