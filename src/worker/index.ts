@@ -102,6 +102,7 @@ app.post("/api/campaigns/batch", async (c) => {
     }
 
     // Step 2: Associate custom fields with address book (if selected)
+    // Non-fatal: a failure here logs a warning but does not abort contact list / campaign creation.
     if (row.custom_field_ids?.length) {
       try {
         // Fetch the custom fields list once per campaign, then reuse for all PATCHes
@@ -114,12 +115,15 @@ app.post("/api/campaigns/batch", async (c) => {
         );
         result.steps.custom_field = "success";
       } catch (err) {
+        const msg = (err as Error).message;
+        // Zoom returns 400 "Invalid field" for address_book_ids when the 50-address-book
+        // limit per custom field is reached. Surface a clear message instead of raw API noise.
+        const isLimitError = msg.includes("address_book_ids") && msg.includes("Invalid field");
         result.steps.custom_field = "failed";
-        result.steps.contact_list = "skipped";
-        result.steps.campaign = "skipped";
-        result.error = `Custom Field: ${(err as Error).message}`;
-        results.push(result);
-        continue;
+        result.error = isLimitError
+          ? "Custom Field: Zoom limit reached — a custom field cannot be associated with more than 50 address books."
+          : `Custom Field: ${msg}`;
+        // Continue — contact list and campaign creation are not dependent on custom field success.
       }
     }
 
