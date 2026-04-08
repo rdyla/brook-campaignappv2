@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import {
   createAddressBook,
   associateCustomFieldWithAddressBook,
+  fetchCustomFieldsRaw,
   createContactList,
   createCampaign,
   listUnits,
@@ -103,9 +104,12 @@ app.post("/api/campaigns/batch", async (c) => {
     // Step 2: Associate custom fields with address book (if selected)
     if (row.custom_field_ids?.length) {
       try {
+        // Fetch the custom fields list once per campaign, then reuse for all PATCHes
+        // (avoids N redundant GETs when multiple custom fields are selected)
+        const allFields = await fetchCustomFieldsRaw(c.env);
         await Promise.all(
           row.custom_field_ids.map((cfId) =>
-            associateCustomFieldWithAddressBook(c.env, cfId, addressBookId)
+            associateCustomFieldWithAddressBook(c.env, cfId, addressBookId, allFields)
           )
         );
         result.steps.custom_field = "success";

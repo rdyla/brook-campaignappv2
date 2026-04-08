@@ -139,27 +139,33 @@ export async function listAddressBookCustomFields(env: ZoomEnv) {
   return fields.map((f) => ({ id: f.custom_field_id, name: f.custom_field_name }));
 }
 
+type CustomFieldRecord = {
+  custom_field_id: string;
+  custom_field_name: string;
+  custom_field_description?: string;
+  data_type: string;
+  default_value?: string;
+  pick_list_values?: string[];
+  address_books?: { address_book_id: string }[];
+  use_as_routing_profile_parameter?: boolean;
+  use_as_external_url_parameter?: boolean;
+  show_in_transferred_calls?: boolean;
+  show_in_inbound_notification?: boolean;
+  show_in_profile_tab?: boolean;
+};
+
+export async function fetchCustomFieldsRaw(env: ZoomEnv): Promise<CustomFieldRecord[]> {
+  const data = await zoomGet(env, `${CC_BASE}/address_books/custom_fields`);
+  return (data.custom_fields as CustomFieldRecord[]) ?? [];
+}
+
 export async function associateCustomFieldWithAddressBook(
   env: ZoomEnv,
   customFieldId: string,
-  addressBookId: string
+  addressBookId: string,
+  prefetchedFields?: CustomFieldRecord[]
 ): Promise<void> {
-  type CF = {
-    custom_field_id: string;
-    custom_field_name: string;
-    custom_field_description?: string;
-    data_type: string;
-    default_value?: string;
-    pick_list_values?: string[];
-    address_books?: { address_book_id: string }[];
-    use_as_routing_profile_parameter?: boolean;
-    use_as_external_url_parameter?: boolean;
-    show_in_transferred_calls?: boolean;
-    show_in_inbound_notification?: boolean;
-    show_in_profile_tab?: boolean;
-  };
-  const data = await zoomGet(env, `${CC_BASE}/address_books/custom_fields`);
-  const fields = (data.custom_fields as CF[]) ?? [];
+  const fields = prefetchedFields ?? await fetchCustomFieldsRaw(env);
   const field = fields.find((f) => f.custom_field_id === customFieldId);
   if (!field) throw new Error(`Custom field ${customFieldId} not found`);
 

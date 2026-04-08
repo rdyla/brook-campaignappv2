@@ -5,12 +5,15 @@ import ResultsView from "./components/ResultsView";
 import CleanupView from "./components/CleanupView";
 import type {
   CampaignRow,
+  CampaignResult,
   ParseError,
   BatchRequest,
   BatchResult,
   BatchRun,
   Catalog,
 } from "./types";
+
+const CHUNK_SIZE = 10;
 
 type View = "upload" | "preview" | "processing" | "results" | "cleanup";
 
@@ -27,6 +30,7 @@ export default function App() {
   const [batchHistory, setBatchHistory] = useState<BatchRun[]>([]);
   const [currentRun, setCurrentRun] = useState<BatchRun | null>(null);
   const [batchError, setBatchError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<{ done: number; total: number }>({ done: 0, total: 0 });
 
   async function fetchCatalog() {
     setCatalogLoading(true);
@@ -56,19 +60,39 @@ export default function App() {
     setView("processing");
     setBatchError(null);
 
+    const chunks: BatchRequest["rows"][] = [];
+    for (let i = 0; i < req.rows.length; i += CHUNK_SIZE) {
+      chunks.push(req.rows.slice(i, i + CHUNK_SIZE));
+    }
+
+    setProgress({ done: 0, total: req.rows.length });
+    const allResults: CampaignResult[] = [];
+
     try {
-      const r = await fetch("/api/campaigns/batch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(req),
-      });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const result = (await r.json()) as BatchResult;
+      for (const chunk of chunks) {
+        const r = await fetch("/api/campaigns/batch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rows: chunk, unit_id: req.unit_id }),
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const result = (await r.json()) as BatchResult;
+        allResults.push(...result.results);
+        setProgress((p) => ({ ...p, done: allResults.length }));
+      }
+
+      const merged: BatchResult = {
+        total: allResults.length,
+        succeeded: allResults.filter((r) => r.status === "success").length,
+        failed: allResults.filter((r) => r.status === "failed").length,
+        results: allResults,
+        timestamp: new Date().toISOString(),
+      };
 
       const run: BatchRun = {
         id: crypto.randomUUID(),
         filename,
-        result,
+        result: merged,
       };
 
       setBatchHistory((prev) => [run, ...prev]);
@@ -174,10 +198,16 @@ export default function App() {
           <div className="flex flex-col items-center justify-center min-h-[50vh] gap-4">
             <div className="w-10 h-10 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin" />
             <p className="text-slate-600 font-medium">
-              Creating {rows.length} campaign{rows.length !== 1 ? "s" : ""}…
+              Creating campaigns… {progress.done} / {progress.total}
             </p>
+            <div className="w-full max-w-sm bg-slate-200 rounded-full h-2">
+              <div
+                className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                style={{ width: progress.total > 0 ? `${(progress.done / progress.total) * 100}%` : "0%" }}
+              />
+            </div>
             <p className="text-slate-400 text-sm text-center max-w-sm">
-              Creating contact list and campaign record for each row.
+              Processing in batches of {CHUNK_SIZE} — do not close this tab.
             </p>
           </div>
         )}
