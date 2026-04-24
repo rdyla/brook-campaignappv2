@@ -600,6 +600,27 @@ export default function PreviewTable({
                             })}
                           </p>
                         )}
+                        {skipped && res?.queueSuggestionId && (
+                          <button
+                            onClick={() => setOverride(i, "queue_id", res.queueSuggestionId!)}
+                            className="mt-1 inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-amber-100 hover:bg-amber-200 text-amber-800 border border-amber-300"
+                          >
+                            ✓ Accept "{res.queueSuggestion}"
+                          </button>
+                        )}
+                        {skipped && res?.queueAmbiguous && res.queueAmbiguous.length > 0 && (
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {res.queueAmbiguous.slice(0, 5).map((c) => (
+                              <button
+                                key={c.id}
+                                onClick={() => setOverride(i, "queue_id", c.id)}
+                                className="text-xs px-2 py-0.5 rounded bg-amber-100 hover:bg-amber-200 text-amber-800 border border-amber-300"
+                              >
+                                ✓ {c.name}
+                              </button>
+                            ))}
+                          </div>
+                        )}
                         {!skipped && res?.queueMatchType === "contains" && (
                           <p className="text-xs text-slate-400 mt-0.5">
                             Queue matched by word overlap (searched "{res.queueSearchKey}")

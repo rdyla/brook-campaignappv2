@@ -7,12 +7,46 @@ export function cleanMojibake(s: string): string {
   return s.replace(/\s+â\s+/g, " – ").replace(/([A-Za-z])â([A-Za-z])/g, "$1'$2");
 }
 
+// Common street/directional abbreviations expanded to their long form so that
+// e.g. "Lincoln St" and "Lincoln Street" resolve to the same key. Applied
+// per-word after punctuation is stripped. "Dr" is intentionally absent because
+// it collides with the honorific ("Dr. Beney"). Keep this conservative —
+// domain-specific abbrevs (FM, IM, PC, etc.) belong in per-tenant config, not here.
+const STREET_ABBREVIATIONS: Record<string, string> = {
+  st: "street",
+  rd: "road",
+  ave: "avenue",
+  av: "avenue",
+  blvd: "boulevard",
+  ln: "lane",
+  ct: "court",
+  pl: "place",
+  pkwy: "parkway",
+  hwy: "highway",
+  ste: "suite",
+  apt: "apartment",
+  bldg: "building",
+  n: "north",
+  s: "south",
+  e: "east",
+  w: "west",
+  ne: "northeast",
+  nw: "northwest",
+  se: "southeast",
+  sw: "southwest",
+};
+
 export function normalizeKey(s: string): string {
-  return cleanMojibake(s)
+  const base = cleanMojibake(s)
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
+  if (!base) return base;
+  return base
+    .split(" ")
+    .map((w) => STREET_ABBREVIATIONS[w] ?? w)
+    .join(" ");
 }
 
 export function last10Digits(s: string): string {
@@ -56,8 +90,10 @@ export interface ResolvedRow {
   queueMatchType?: "exact" | "contains" | "fuzzy-suggest" | "ambiguous" | "none";
   /** Closest-match queue name when CSV lookup had no exact hit. */
   queueSuggestion?: string;
+  /** Catalog ID paired with queueSuggestion — lets the UI one-click accept. */
+  queueSuggestionId?: string;
   /** Candidate names when a contains-match was ambiguous (≥2 hits). */
-  queueAmbiguous?: string[];
+  queueAmbiguous?: { id: string; name: string }[];
   skip: boolean;
   skipReason?: SkipReason;
   hasCsvQueue: boolean;
@@ -113,7 +149,8 @@ export function resolveRows(
     let queueSearchKey: string | undefined;
     let queueMatchType: ResolvedRow["queueMatchType"];
     let queueSuggestion: string | undefined;
-    let queueAmbiguous: string[] | undefined;
+    let queueSuggestionId: string | undefined;
+    let queueAmbiguous: { id: string; name: string }[] | undefined;
 
     if (ov.queue_id) {
       queueId = ov.queue_id;
@@ -145,7 +182,7 @@ export function resolveRows(
           queueMatchType = "contains";
         } else if (containsMatches.length > 1) {
           queueMatchType = "ambiguous";
-          queueAmbiguous = containsMatches.map((q) => q.name);
+          queueAmbiguous = containsMatches.map((q) => ({ id: q.id, name: q.name }));
         } else {
           // 3) Fuzzy suggestion (no auto-resolve).
           queueMatchType = "none";
@@ -160,7 +197,9 @@ export function resolveRows(
           }
           const threshold = Math.max(3, Math.floor(key.length * 0.2));
           if (bestKey && bestDist <= threshold) {
-            queueSuggestion = queueByKey.get(bestKey)?.name;
+            const suggestion = queueByKey.get(bestKey);
+            queueSuggestion = suggestion?.name;
+            queueSuggestionId = suggestion?.id;
             queueMatchType = "fuzzy-suggest";
           }
         }
@@ -237,6 +276,7 @@ export function resolveRows(
       queueSearchKey,
       queueMatchType,
       queueSuggestion,
+      queueSuggestionId,
       queueAmbiguous,
       skip,
       skipReason,
@@ -248,7 +288,7 @@ export function resolveRows(
 
 export function describeSkipReason(
   reason: SkipReason,
-  opts: { searchKey?: string; suggestion?: string; ambiguous?: string[] } = {}
+  opts: { searchKey?: string; suggestion?: string; ambiguous?: { id: string; name: string }[] } = {}
 ): string {
   const { searchKey, suggestion, ambiguous } = opts;
   const keyPart = searchKey ? ` (searched "${searchKey}")` : "";
@@ -262,7 +302,7 @@ export function describeSkipReason(
         ? `Queue not found${keyPart} — did you mean "${suggestion}"?`
         : `Queue not found${keyPart}`;
     case "queue-ambiguous": {
-      const sample = ambiguous?.slice(0, 3).join(", ");
+      const sample = ambiguous?.slice(0, 3).map((a) => a.name).join(", ");
       const extra = ambiguous && ambiguous.length > 3 ? `, +${ambiguous.length - 3} more` : "";
       return `Queue ambiguous${keyPart} — matches ${sample ?? "multiple"}${extra}`;
     }
