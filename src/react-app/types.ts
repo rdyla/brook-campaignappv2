@@ -11,6 +11,12 @@ export interface CampaignRow {
   dial_sequence: string;
   max_ring_time: number;
   retry_period: number;
+  // Raw CSV source fields used by the resolver for per-row queue/DID lookup.
+  // Populated only when the CSV uses the new (organization + queue + primary_did + campaign) schema.
+  organization?: string;
+  queue_name?: string;
+  primary_did?: string;
+  campaign_suffix?: string;
 }
 
 // CampaignRow + IDs resolved via catalog dropdowns — sent to the batch endpoint
@@ -63,6 +69,11 @@ export interface AddressBookCustomFieldOption {
   name: string;
 }
 
+export interface ExistingCampaignOption {
+  id: string;
+  name: string;
+}
+
 export interface Catalog {
   queues: QueueOption[];
   phoneNumbers: PhoneNumberOption[];
@@ -70,6 +81,7 @@ export interface Catalog {
   contactLists: ContactListOption[];
   units: UnitOption[];
   addressBookCustomFields: AddressBookCustomFieldOption[];
+  existingCampaigns: ExistingCampaignOption[];
 }
 
 export interface BatchRequest {

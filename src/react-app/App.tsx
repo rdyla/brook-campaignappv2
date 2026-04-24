@@ -31,6 +31,9 @@ export default function App() {
   const [currentRun, setCurrentRun] = useState<BatchRun | null>(null);
   const [batchError, setBatchError] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number }>({ done: 0, total: 0 });
+  const [testRunResult, setTestRunResult] = useState<BatchResult | null>(null);
+  const [testRunLoading, setTestRunLoading] = useState(false);
+  const [testRunProgress, setTestRunProgress] = useState<{ done: number; total: number }>({ done: 0, total: 0 });
 
   async function fetchCatalog() {
     setCatalogLoading(true);
@@ -56,38 +59,42 @@ export default function App() {
     if (!catalog) fetchCatalog();
   }
 
-  async function handleConfirm(req: BatchRequest) {
-    setView("processing");
-    setBatchError(null);
-
+  async function submitBatch(
+    req: BatchRequest,
+    onProgress: (done: number, total: number) => void
+  ): Promise<BatchResult> {
     const chunks: BatchRequest["rows"][] = [];
     for (let i = 0; i < req.rows.length; i += CHUNK_SIZE) {
       chunks.push(req.rows.slice(i, i + CHUNK_SIZE));
     }
-
-    setProgress({ done: 0, total: req.rows.length });
+    onProgress(0, req.rows.length);
     const allResults: CampaignResult[] = [];
+    for (const chunk of chunks) {
+      const r = await fetch("/api/campaigns/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows: chunk, unit_id: req.unit_id }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const result = (await r.json()) as BatchResult;
+      allResults.push(...result.results);
+      onProgress(allResults.length, req.rows.length);
+    }
+    return {
+      total: allResults.length,
+      succeeded: allResults.filter((r) => r.status === "success").length,
+      failed: allResults.filter((r) => r.status === "failed").length,
+      results: allResults,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  async function handleConfirm(req: BatchRequest) {
+    setView("processing");
+    setBatchError(null);
 
     try {
-      for (const chunk of chunks) {
-        const r = await fetch("/api/campaigns/batch", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ rows: chunk, unit_id: req.unit_id }),
-        });
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const result = (await r.json()) as BatchResult;
-        allResults.push(...result.results);
-        setProgress((p) => ({ ...p, done: allResults.length }));
-      }
-
-      const merged: BatchResult = {
-        total: allResults.length,
-        succeeded: allResults.filter((r) => r.status === "success").length,
-        failed: allResults.filter((r) => r.status === "failed").length,
-        results: allResults,
-        timestamp: new Date().toISOString(),
-      };
+      const merged = await submitBatch(req, (done, total) => setProgress({ done, total }));
 
       const run: BatchRun = {
         id: crypto.randomUUID(),
@@ -97,6 +104,7 @@ export default function App() {
 
       setBatchHistory((prev) => [run, ...prev]);
       setCurrentRun(run);
+      setTestRunResult(null);
       setView("results");
     } catch (err) {
       setBatchError((err as Error).message);
@@ -104,11 +112,33 @@ export default function App() {
     }
   }
 
+  async function handleTestRun(req: BatchRequest) {
+    setTestRunLoading(true);
+    setTestRunResult(null);
+    setBatchError(null);
+    try {
+      const merged = await submitBatch(req, (done, total) => setTestRunProgress({ done, total }));
+      setTestRunResult(merged);
+      // Refresh catalog so the newly-created campaigns show as "already exists"
+      // on the preview screen and get skipped during the full run.
+      await fetchCatalog();
+    } catch (err) {
+      setBatchError((err as Error).message);
+    } finally {
+      setTestRunLoading(false);
+    }
+  }
+
+  function handleClearTestRun() {
+    setTestRunResult(null);
+  }
+
   function handleReset() {
     setRows([]);
     setParseErrors([]);
     setFilename("");
     setBatchError(null);
+    setTestRunResult(null);
     setView("upload");
   }
 
@@ -189,6 +219,11 @@ export default function App() {
               catalogError={catalogError}
               onCatalogRetry={fetchCatalog}
               onConfirm={handleConfirm}
+              onTestRun={handleTestRun}
+              testRunResult={testRunResult}
+              testRunLoading={testRunLoading}
+              testRunProgress={testRunProgress}
+              onClearTestRun={handleClearTestRun}
               onBack={handleReset}
             />
           </>

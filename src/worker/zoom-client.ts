@@ -238,13 +238,15 @@ async function zoomDelete(env: ZoomEnv, path: string): Promise<void> {
   }
 }
 
-export async function listCampaigns(env: ZoomEnv) {
+export async function listCampaigns(env: ZoomEnv, status: string | null = "active") {
   type C = { outbound_campaign_id: string; outbound_campaign_name: string };
+  const extraParams: Record<string, string> = { page_size: "10" };
+  if (status) extraParams.status = status;
   const items = await fetchAllPages<C>(
     env,
     `${CC_BASE}/outbound_campaign/campaigns`,
     "outbound_campaign_items",
-    { status: "active", page_size: "10" }
+    extraParams
   );
   return items.map((c) => ({ id: c.outbound_campaign_id, name: c.outbound_campaign_name }));
 }

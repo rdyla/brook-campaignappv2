@@ -33,16 +33,27 @@ app.get("/api/catalog", async (c) => {
   // Pre-warm token so parallel calls share it
   await getAccessToken(c.env);
 
-  const [queues, phoneNumbers, businessHours, contactLists, units, addressBookCustomFields] = await Promise.all([
-    listQueues(c.env),
-    listPhoneNumbers(c.env),
-    listBusinessHours(c.env),
-    listContactLists(c.env),
-    listUnits(c.env),
-    listAddressBookCustomFields(c.env),
-  ]);
+  const [queues, phoneNumbers, businessHours, contactLists, units, addressBookCustomFields, existingCampaigns] =
+    await Promise.all([
+      listQueues(c.env),
+      listPhoneNumbers(c.env),
+      listBusinessHours(c.env),
+      listContactLists(c.env),
+      listUnits(c.env),
+      listAddressBookCustomFields(c.env),
+      // null status → all campaigns (active + inactive) for dedup checks on import
+      listCampaigns(c.env, null).catch(() => [] as { id: string; name: string }[]),
+    ]);
 
-  return c.json({ queues, phoneNumbers, businessHours, contactLists, units, addressBookCustomFields });
+  return c.json({
+    queues,
+    phoneNumbers,
+    businessHours,
+    contactLists,
+    units,
+    addressBookCustomFields,
+    existingCampaigns,
+  });
 });
 
 // Execute batch campaign creation
