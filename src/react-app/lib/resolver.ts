@@ -41,6 +41,7 @@ export type SkipReason =
   | "duplicate-in-file"
   | "already-exists"
   | "queue-not-found"
+  | "queue-ambiguous"
   | "phone-not-found"
   | "queue-and-phone-not-found";
 
@@ -49,8 +50,14 @@ export interface ResolvedRow {
   phoneId?: string;
   queueSource: "csv" | "override" | "default" | "none";
   phoneSource: "csv" | "override" | "default" | "none";
+  /** The normalized search key used for queue lookup — surfaced in UI on miss. */
+  queueSearchKey?: string;
+  /** How the queue was matched — transparency for the user. */
+  queueMatchType?: "exact" | "contains" | "fuzzy-suggest" | "ambiguous" | "none";
   /** Closest-match queue name when CSV lookup had no exact hit. */
   queueSuggestion?: string;
+  /** Candidate names when a contains-match was ambiguous (≥2 hits). */
+  queueAmbiguous?: string[];
   skip: boolean;
   skipReason?: SkipReason;
   hasCsvQueue: boolean;
@@ -86,43 +93,82 @@ export function resolveRows(
 
   const seenTriples = new Set<string>();
 
+  // Pre-compute queue name word sets for the contains-all-words fallback.
+  const queueWordSets = catalog.queues.map((q) => ({
+    id: q.id,
+    name: q.name,
+    words: new Set(normalizeKey(q.name).split(" ").filter(Boolean)),
+  }));
+
   return rows.map((row, idx) => {
     const ov = overrides.get(idx) ?? {};
-    const hasCsvQueue = Boolean(row.organization && row.queue_name);
+    // Queue column alone is enough; organization is optional and collapses
+    // when it duplicates the queue name (e.g. CSV row "YJH, YJH, …").
+    const hasCsvQueue = Boolean(row.queue_name);
     const hasCsvPhone = Boolean(row.primary_did);
 
     // Queue resolution
     let queueId: string | undefined;
     let queueSource: ResolvedRow["queueSource"] = "none";
+    let queueSearchKey: string | undefined;
+    let queueMatchType: ResolvedRow["queueMatchType"];
     let queueSuggestion: string | undefined;
+    let queueAmbiguous: string[] | undefined;
 
     if (ov.queue_id) {
       queueId = ov.queue_id;
       queueSource = "override";
+      queueMatchType = "exact";
     } else if (hasCsvQueue) {
-      const key = normalizeKey(`${row.organization} ${row.queue_name}`);
+      const org = row.organization?.trim() ?? "";
+      const queue = row.queue_name!;
+      const orgKey = normalizeKey(org);
+      const queueKey = normalizeKey(queue);
+      const key = org && orgKey !== queueKey ? `${orgKey} ${queueKey}` : queueKey;
+      queueSearchKey = key;
+
+      // 1) Exact normalized match.
       const hit = queueByKey.get(key);
       if (hit) {
         queueId = hit.id;
         queueSource = "csv";
+        queueMatchType = "exact";
       } else {
-        let bestKey: string | undefined;
-        let bestDist = Infinity;
-        for (const k of queueKeys) {
-          const d = levenshtein(key, k);
-          if (d < bestDist) {
-            bestDist = d;
-            bestKey = k;
+        // 2) Contains-all-words match — Zoom queue's word set ⊇ search key's words.
+        const searchWords = key.split(" ").filter(Boolean);
+        const containsMatches = queueWordSets.filter((q) =>
+          searchWords.every((w) => q.words.has(w))
+        );
+        if (containsMatches.length === 1) {
+          queueId = containsMatches[0].id;
+          queueSource = "csv";
+          queueMatchType = "contains";
+        } else if (containsMatches.length > 1) {
+          queueMatchType = "ambiguous";
+          queueAmbiguous = containsMatches.map((q) => q.name);
+        } else {
+          // 3) Fuzzy suggestion (no auto-resolve).
+          queueMatchType = "none";
+          let bestKey: string | undefined;
+          let bestDist = Infinity;
+          for (const k of queueKeys) {
+            const d = levenshtein(key, k);
+            if (d < bestDist) {
+              bestDist = d;
+              bestKey = k;
+            }
           }
-        }
-        const threshold = Math.max(3, Math.floor(key.length * 0.2));
-        if (bestKey && bestDist <= threshold) {
-          queueSuggestion = queueByKey.get(bestKey)?.name;
+          const threshold = Math.max(3, Math.floor(key.length * 0.2));
+          if (bestKey && bestDist <= threshold) {
+            queueSuggestion = queueByKey.get(bestKey)?.name;
+            queueMatchType = "fuzzy-suggest";
+          }
         }
       }
     } else if (defaults.queueId) {
       queueId = defaults.queueId;
       queueSource = "default";
+      queueMatchType = "exact";
     }
 
     // Phone resolution
@@ -149,7 +195,7 @@ export function resolveRows(
     let skipReason: SkipReason | undefined;
 
     const tripleKey = hasCsvQueue && row.campaign_suffix
-      ? `t|${normalizeKey(row.organization!)}|${normalizeKey(row.queue_name!)}|${normalizeKey(row.campaign_suffix)}`
+      ? `t|${normalizeKey(row.organization ?? "")}|${normalizeKey(row.queue_name!)}|${normalizeKey(row.campaign_suffix)}`
       : `n|${normalizeKey(row.campaign_name)}`;
 
     if (seenTriples.has(tripleKey)) {
@@ -167,9 +213,13 @@ export function resolveRows(
     if (!skip) {
       const noQueue = !queueId;
       const noPhone = !phoneId;
+      const ambiguousQueue = queueMatchType === "ambiguous";
       if (noQueue && noPhone) {
         skip = true;
         skipReason = "queue-and-phone-not-found";
+      } else if (ambiguousQueue) {
+        skip = true;
+        skipReason = "queue-ambiguous";
       } else if (noQueue) {
         skip = true;
         skipReason = "queue-not-found";
@@ -184,7 +234,10 @@ export function resolveRows(
       phoneId,
       queueSource,
       phoneSource,
+      queueSearchKey,
+      queueMatchType,
       queueSuggestion,
+      queueAmbiguous,
       skip,
       skipReason,
       hasCsvQueue,
@@ -193,17 +246,31 @@ export function resolveRows(
   });
 }
 
-export function describeSkipReason(reason: SkipReason, suggestion?: string): string {
+export function describeSkipReason(
+  reason: SkipReason,
+  opts: { searchKey?: string; suggestion?: string; ambiguous?: string[] } = {}
+): string {
+  const { searchKey, suggestion, ambiguous } = opts;
+  const keyPart = searchKey ? ` (searched "${searchKey}")` : "";
   switch (reason) {
     case "duplicate-in-file":
       return "Duplicate in file";
     case "already-exists":
       return "Already exists in Zoom";
     case "queue-not-found":
-      return suggestion ? `Queue not found (did you mean "${suggestion}"?)` : "Queue not found";
+      return suggestion
+        ? `Queue not found${keyPart} — did you mean "${suggestion}"?`
+        : `Queue not found${keyPart}`;
+    case "queue-ambiguous": {
+      const sample = ambiguous?.slice(0, 3).join(", ");
+      const extra = ambiguous && ambiguous.length > 3 ? `, +${ambiguous.length - 3} more` : "";
+      return `Queue ambiguous${keyPart} — matches ${sample ?? "multiple"}${extra}`;
+    }
     case "phone-not-found":
       return "Phone number not found";
     case "queue-and-phone-not-found":
-      return suggestion ? `Queue + phone not found (queue suggestion: "${suggestion}")` : "Queue + phone not found";
+      return suggestion
+        ? `Queue + phone not found${keyPart} — queue suggestion: "${suggestion}"`
+        : `Queue + phone not found${keyPart}`;
   }
 }

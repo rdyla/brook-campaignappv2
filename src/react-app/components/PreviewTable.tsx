@@ -579,7 +579,7 @@ export default function PreviewTable({
                         ) : skipped ? (
                           <span
                             className="text-xs text-amber-700"
-                            title={describeSkipReason(res.skipReason!, res.queueSuggestion)}
+                            title={describeSkipReason(res.skipReason!, { searchKey: res.queueSearchKey, suggestion: res.queueSuggestion, ambiguous: res.queueAmbiguous })}
                           >
                             ⚠ Skip
                           </span>
@@ -593,7 +593,16 @@ export default function PreviewTable({
                         </p>
                         {skipped && res?.skipReason && (
                           <p className="text-xs text-amber-600 mt-0.5">
-                            {describeSkipReason(res.skipReason, res.queueSuggestion)}
+                            {describeSkipReason(res.skipReason, {
+                              searchKey: res.queueSearchKey,
+                              suggestion: res.queueSuggestion,
+                              ambiguous: res.queueAmbiguous,
+                            })}
+                          </p>
+                        )}
+                        {!skipped && res?.queueMatchType === "contains" && (
+                          <p className="text-xs text-slate-400 mt-0.5">
+                            Queue matched by word overlap (searched "{res.queueSearchKey}")
                           </p>
                         )}
                         {!skipped && row.campaign_description && (

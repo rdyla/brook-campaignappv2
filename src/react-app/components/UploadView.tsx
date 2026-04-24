@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import Papa from "papaparse";
 import type { CampaignRow, ParseError } from "../types";
-import { cleanMojibake } from "../lib/resolver";
+import { cleanMojibake, normalizeKey } from "../lib/resolver";
 
 interface Props {
   onParsed: (rows: CampaignRow[], errors: ParseError[], filename: string) => void;
@@ -47,8 +47,8 @@ function normalizeHeader(h: string): string {
 }
 
 function isNewFormatRow(r: Record<string, string>): boolean {
+  // organization is optional; queue + primary_did + campaign signal the new format.
   return (
-    typeof r.organization === "string" &&
     typeof r.queue === "string" &&
     typeof r.primary_did === "string" &&
     typeof r.campaign === "string"
@@ -68,15 +68,11 @@ function parseRows(raw: Record<string, string>[]): {
     const rowNum = i + 1;
 
     if (newFormat) {
-      const organization = r.organization?.trim();
+      const organization = r.organization?.trim() ?? "";
       const queueName = r.queue?.trim();
       const primaryDid = r.primary_did?.trim();
       const campaignSuffix = r.campaign?.trim();
 
-      if (!organization) {
-        errors.push({ row: rowNum, message: "Missing required field: organization" });
-        continue;
-      }
       if (!queueName) {
         errors.push({ row: rowNum, message: "Missing required field: queue" });
         continue;
@@ -103,7 +99,15 @@ function parseRows(raw: Record<string, string>[]): {
       const orgClean = cleanMojibake(organization);
       const queueClean = cleanMojibake(queueName);
       const suffixClean = cleanMojibake(campaignSuffix);
-      const campaign_name = `${orgClean} ${queueClean} ${suffixClean}`.replace(/\s+/g, " ").trim();
+
+      // Build the campaign name:
+      // - No org → just "queue suffix"
+      // - Org matches queue (e.g. "YJH, YJH") → collapse to "queue suffix"
+      // - Otherwise → "org queue suffix"
+      const orgKey = normalizeKey(orgClean);
+      const queueKey = normalizeKey(queueClean);
+      const prefix = orgClean && orgKey !== queueKey ? `${orgClean} ${queueClean}` : queueClean;
+      const campaign_name = `${prefix} ${suffixClean}`.replace(/\s+/g, " ").trim();
 
       rows.push({
         campaign_name,
@@ -114,7 +118,7 @@ function parseRows(raw: Record<string, string>[]): {
         dial_sequence: r.dial_sequence?.trim() || "list_dial",
         max_ring_time: r.max_ring_time ? Number(r.max_ring_time) : 60,
         retry_period: r.retry_period ? Number(r.retry_period) : 60,
-        organization: orgClean,
+        organization: orgClean || undefined,
         queue_name: queueClean,
         primary_did: primaryDid,
         campaign_suffix: suffixClean,
@@ -251,13 +255,16 @@ export default function UploadView({ onParsed }: Props) {
             <span className="font-mono text-slate-700"> "&#123;organization&#125; &#123;queue&#125; &#123;campaign&#125;"</span>.
           </p>
           <div className="grid grid-cols-2 gap-x-6 gap-y-1.5">
-            <div><span className="text-slate-900 font-medium">organization</span><span className="text-red-500 ml-1">*</span></div>
             <div><span className="text-slate-900 font-medium">queue</span><span className="text-red-500 ml-1">*</span></div>
             <div><span className="text-slate-900 font-medium">primary_did</span><span className="text-red-500 ml-1">*</span></div>
             <div><span className="text-slate-900 font-medium">campaign</span><span className="text-red-500 ml-1">*</span></div>
+            <div>organization <span className="text-slate-400">(optional prefix)</span></div>
             <div>priority <span className="text-slate-400">(default 5)</span></div>
             <div>dialing_method <span className="text-slate-400">(default preview)</span></div>
           </div>
+          <p className="text-slate-500 mt-2">
+            Leave organization blank if the Zoom queue name has no prefix. If organization matches the queue value, it's collapsed.
+          </p>
         </div>
 
         <div className="border-t border-slate-200 pt-3">
