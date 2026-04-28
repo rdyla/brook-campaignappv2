@@ -3,6 +3,7 @@ import UploadView from "./components/UploadView";
 import PreviewTable from "./components/PreviewTable";
 import ResultsView from "./components/ResultsView";
 import CleanupView from "./components/CleanupView";
+import ContactImportView from "./components/ContactImportView";
 import type {
   CampaignRow,
   ParseError,
@@ -12,7 +13,7 @@ import type {
   Catalog,
 } from "./types";
 
-type View = "upload" | "preview" | "processing" | "results" | "cleanup";
+type View = "upload" | "preview" | "processing" | "results" | "contacts" | "cleanup";
 
 export default function App() {
   const [view, setView] = useState<View>("upload");
@@ -135,6 +136,14 @@ export default function App() {
               </button>
             )}
             <button
+              onClick={() => setView("contacts")}
+              className={`px-3 py-1.5 rounded ${
+                view === "contacts" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"
+              }`}
+            >
+              Import Contacts
+            </button>
+            <button
               onClick={() => setView("cleanup")}
               className={`px-3 py-1.5 rounded ${
                 view === "cleanup" ? "bg-red-600 text-white" : "text-slate-600 hover:bg-slate-100"
@@ -189,6 +198,8 @@ export default function App() {
             onReset={handleReset}
           />
         )}
+
+        {view === "contacts" && <ContactImportView />}
 
         {view === "cleanup" && <CleanupView />}
 

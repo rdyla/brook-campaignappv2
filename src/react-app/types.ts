@@ -1,6 +1,24 @@
 export type DialingMethod = "preview" | "progressive" | "agentless";
 export type StepStatus = "pending" | "success" | "failed" | "skipped";
 
+export type CFDataType =
+  | "string"
+  | "number"
+  | "boolean"
+  | "email"
+  | "phone"
+  | "percent"
+  | "currency"
+  | "date_time"
+  | "pick_list";
+
+// Custom field definition parsed from a `cf:<name>:<data_type>[:v1|v2|…]` column header
+export interface CustomFieldDef {
+  name: string;
+  data_type: CFDataType;
+  pick_list_values?: string[];
+}
+
 // Fields that come from the CSV — no IDs, only human-knowable values
 export interface CampaignRow {
   campaign_name: string;
@@ -11,6 +29,7 @@ export interface CampaignRow {
   dial_sequence: string;
   max_ring_time: number;
   retry_period: number;
+  custom_field_defs: CustomFieldDef[];
 }
 
 // CampaignRow + IDs resolved via catalog dropdowns — sent to the batch endpoint
@@ -19,7 +38,6 @@ export interface ResolvedCampaignRow extends CampaignRow {
   phone_number_id: string;
   business_hour_id?: string;
   dnc_list_id?: string;
-  custom_field_ids?: string[];
 }
 
 // Per-row override selections (any field overrides the global default)
@@ -28,7 +46,6 @@ export interface RowOverride {
   phone_number_id?: string;
   business_hour_id?: string;
   dnc_list_id?: string;
-  custom_field_ids?: string[];
 }
 
 // Catalog option types returned by GET /api/catalog
@@ -53,44 +70,36 @@ export interface ContactListOption {
   name: string;
 }
 
-export interface UnitOption {
-  id: string;
-  name: string;
-}
-
-export interface AddressBookCustomFieldOption {
-  id: string;
-  name: string;
-}
-
 export interface Catalog {
   queues: QueueOption[];
   phoneNumbers: PhoneNumberOption[];
   businessHours: BusinessHourOption[];
   contactLists: ContactListOption[];
-  units: UnitOption[];
-  addressBookCustomFields: AddressBookCustomFieldOption[];
 }
 
 export interface BatchRequest {
   rows: ResolvedCampaignRow[];
-  unit_id: string;
 }
 
 // Batch results
 export interface CampaignSteps {
-  address_book: StepStatus;
-  custom_field: StepStatus;
   contact_list: StepStatus;
+  custom_fields: StepStatus;
   campaign: StepStatus;
+}
+
+export interface AttachedCustomField {
+  custom_field_id: string;
+  custom_field_name: string;
+  reused: boolean;
 }
 
 export interface CampaignResult {
   campaign_name: string;
   status: "success" | "failed";
-  address_book_id?: string;
   contact_list_id?: string;
   campaign_id?: string;
+  custom_fields?: AttachedCustomField[];
   error?: string;
   steps: CampaignSteps;
 }
@@ -112,13 +121,11 @@ export interface CleanupItem {
 export interface CleanupResources {
   campaigns: CleanupItem[];
   contactLists: CleanupItem[];
-  addressBooks: CleanupItem[];
 }
 
 export interface CleanupDeleteRequest {
   campaign_ids: string[];
   contact_list_ids: string[];
-  address_book_ids: string[];
 }
 
 export interface CleanupItemResult {
@@ -130,7 +137,6 @@ export interface CleanupItemResult {
 export interface CleanupDeleteResult {
   campaigns: CleanupItemResult[];
   contactLists: CleanupItemResult[];
-  addressBooks: CleanupItemResult[];
 }
 
 export interface ParseError {
@@ -142,4 +148,44 @@ export interface BatchRun {
   id: string;
   filename: string;
   result: BatchResult;
+}
+
+// ── Contact import ─────────────────────────────────────────────────────────
+
+export type ContactPhoneType = "Main" | "Work" | "Home" | "Mobile" | "Other";
+
+export interface ContactPhone {
+  contact_phone_number: string;
+  contact_phone_type: ContactPhoneType;
+}
+
+export interface ContactCustomFieldValue {
+  custom_field_id: string;
+  custom_field_value: string;
+}
+
+export interface ContactPayload {
+  contact_display_name: string;
+  contact_first_name?: string;
+  contact_last_name?: string;
+  contact_phones: ContactPhone[];
+  contact_emails?: string[];
+  contact_location?: string;
+  contact_account_number?: string;
+  contact_company?: string;
+  contact_role?: string;
+  contact_timezone?: string;
+  custom_fields?: ContactCustomFieldValue[];
+}
+
+export interface ContactImportRequest {
+  contacts: ContactPayload[];
+}
+
+// Custom field metadata returned by GET /api/contact-lists/:id/custom-fields
+export interface ContactListCustomField {
+  id: string;
+  name: string;
+  data_type: CFDataType;
+  pick_list_values: string[];
 }

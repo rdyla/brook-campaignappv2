@@ -6,12 +6,11 @@ import type {
   CleanupDeleteResult,
 } from "../types";
 
-type Section = "campaigns" | "contactLists" | "addressBooks";
+type Section = "campaigns" | "contactLists";
 
 const SECTION_LABELS: Record<Section, string> = {
   campaigns: "Campaigns",
   contactLists: "Contact Lists",
-  addressBooks: "Address Books",
 };
 
 function useSelection(items: CleanupItem[]) {
@@ -118,7 +117,6 @@ export default function CleanupView() {
 
   const campaigns = useSelection(resources?.campaigns ?? []);
   const contactLists = useSelection(resources?.contactLists ?? []);
-  const addressBooks = useSelection(resources?.addressBooks ?? []);
 
   async function fetchResources() {
     setLoading(true);
@@ -127,24 +125,21 @@ export default function CleanupView() {
     setFailedIds(new Map());
     campaigns.clear();
     contactLists.clear();
-    addressBooks.clear();
     try {
       const r = await fetch("/api/cleanup");
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const data = (await r.json()) as CleanupResources & {
-        errors?: { campaigns?: string; contactLists?: string; addressBooks?: string };
+        errors?: { campaigns?: string; contactLists?: string };
       };
       setResources({
         campaigns: data.campaigns,
         contactLists: data.contactLists,
-        addressBooks: data.addressBooks ?? [],
       });
       const errs = data.errors;
       if (errs) {
         const msgs = [
           errs.campaigns && `Campaigns: ${errs.campaigns}`,
           errs.contactLists && `Contact Lists: ${errs.contactLists}`,
-          errs.addressBooks && `Address Books: ${errs.addressBooks}`,
         ].filter(Boolean);
         if (msgs.length) setFetchError(msgs.join(" · "));
       }
@@ -157,7 +152,7 @@ export default function CleanupView() {
 
   useEffect(() => { fetchResources(); }, []);
 
-  const totalSelected = campaigns.selected.size + contactLists.selected.size + addressBooks.selected.size;
+  const totalSelected = campaigns.selected.size + contactLists.selected.size;
 
   async function handleDelete() {
     if (!resources || totalSelected === 0) return;
@@ -168,7 +163,6 @@ export default function CleanupView() {
     const req: CleanupDeleteRequest = {
       campaign_ids: [...campaigns.selected],
       contact_list_ids: [...contactLists.selected],
-      address_book_ids: [...addressBooks.selected],
     };
 
     try {
@@ -180,7 +174,7 @@ export default function CleanupView() {
       const data = (await r.json()) as CleanupDeleteResult;
 
       const newFailedIds = new Map<string, string>();
-      const allResults = [...data.campaigns, ...data.contactLists, ...(data.addressBooks ?? [])];
+      const allResults = [...data.campaigns, ...data.contactLists];
       for (const item of allResults) {
         if (item.status === "failed") {
           newFailedIds.set(item.id, item.error ?? "Unknown error");
@@ -190,21 +184,18 @@ export default function CleanupView() {
 
       const deletedCampaigns = new Set(data.campaigns.filter((i) => i.status === "deleted").map((i) => i.id));
       const deletedContactLists = new Set(data.contactLists.filter((i) => i.status === "deleted").map((i) => i.id));
-      const deletedAddressBooks = new Set((data.addressBooks ?? []).filter((i) => i.status === "deleted").map((i) => i.id));
 
       setResources((prev) =>
         prev
           ? {
               campaigns: prev.campaigns.filter((c) => !deletedCampaigns.has(c.id)),
               contactLists: prev.contactLists.filter((c) => !deletedContactLists.has(c.id)),
-              addressBooks: prev.addressBooks.filter((c) => !deletedAddressBooks.has(c.id)),
             }
           : prev
       );
 
       campaigns.clear();
       contactLists.clear();
-      addressBooks.clear();
 
       const deleted = allResults.filter((i) => i.status === "deleted").length;
       const failed = allResults.filter((i) => i.status === "failed").length;
@@ -232,7 +223,6 @@ export default function CleanupView() {
   const sections: { key: Section; sel: ReturnType<typeof useSelection>; items: CleanupItem[] }[] = [
     { key: "campaigns", sel: campaigns, items: resources?.campaigns ?? [] },
     { key: "contactLists", sel: contactLists, items: resources?.contactLists ?? [] },
-    { key: "addressBooks", sel: addressBooks, items: resources?.addressBooks ?? [] },
   ];
 
   return (

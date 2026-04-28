@@ -1,19 +1,101 @@
 import { useRef, useState } from "react";
 import Papa from "papaparse";
-import type { CampaignRow, ParseError } from "../types";
+import type { CampaignRow, CustomFieldDef, CFDataType, ParseError } from "../types";
 
 interface Props {
   onParsed: (rows: CampaignRow[], errors: ParseError[], filename: string) => void;
 }
 
 const VALID_DIALING: CampaignRow["dialing_method"][] = ["preview", "progressive", "agentless"];
+const VALID_DATA_TYPES: CFDataType[] = [
+  "string",
+  "number",
+  "boolean",
+  "email",
+  "phone",
+  "percent",
+  "currency",
+  "date_time",
+  "pick_list",
+];
 
-function parseRows(raw: Record<string, string>[]): {
-  rows: CampaignRow[];
-  errors: ParseError[];
-} {
+interface ParsedHeader {
+  cfDefs: CustomFieldDef[];
+  cfErrors: string[];
+}
+
+// Parse `cf:<name>:<data_type>[:v1|v2|…]` headers from the CSV column list.
+// Returns the parsed defs plus any header-level errors (which are reported
+// once, not per-row).
+function parseCustomFieldHeaders(headers: string[]): ParsedHeader {
+  const cfDefs: CustomFieldDef[] = [];
+  const cfErrors: string[] = [];
+  const seenNames = new Set<string>();
+
+  for (const raw of headers) {
+    if (!raw.toLowerCase().startsWith("cf:")) continue;
+
+    // Split on first two colons only — the name itself may legitimately
+    // contain colons in pick-list values, but the header form is
+    // `cf:<name>:<data_type>[:values]`. We accept exactly 3 segments min.
+    const parts = raw.slice(3).split(":");
+    if (parts.length < 2) {
+      cfErrors.push(`Header "${raw}" must be of form "cf:<name>:<data_type>"`);
+      continue;
+    }
+
+    const name = parts[0].trim();
+    const dataType = parts[1].trim().toLowerCase() as CFDataType;
+    if (!name) {
+      cfErrors.push(`Header "${raw}" has empty custom-field name`);
+      continue;
+    }
+    if (!VALID_DATA_TYPES.includes(dataType)) {
+      cfErrors.push(
+        `Header "${raw}" has invalid data type "${parts[1]}" — must be one of ${VALID_DATA_TYPES.join(", ")}`
+      );
+      continue;
+    }
+    if (seenNames.has(name)) {
+      cfErrors.push(`Duplicate custom-field column "${name}"`);
+      continue;
+    }
+    seenNames.add(name);
+
+    const def: CustomFieldDef = { name, data_type: dataType };
+
+    if (dataType === "pick_list") {
+      const valuesSegment = parts.slice(2).join(":").trim();
+      const values = valuesSegment
+        .split("|")
+        .map((v) => v.trim())
+        .filter(Boolean);
+      if (values.length === 0) {
+        cfErrors.push(
+          `Header "${raw}" — pick_list requires "|"-separated values, e.g. cf:Status:pick_list:active|inactive`
+        );
+        continue;
+      }
+      def.pick_list_values = values;
+    }
+
+    cfDefs.push(def);
+  }
+
+  return { cfDefs, cfErrors };
+}
+
+function parseRows(
+  raw: Record<string, string>[],
+  headers: string[]
+): { rows: CampaignRow[]; errors: ParseError[] } {
   const rows: CampaignRow[] = [];
   const errors: ParseError[] = [];
+
+  const { cfDefs, cfErrors } = parseCustomFieldHeaders(headers);
+  for (const msg of cfErrors) {
+    errors.push({ row: 0, message: msg });
+  }
 
   for (let i = 0; i < raw.length; i++) {
     const r = raw[i];
@@ -47,6 +129,7 @@ function parseRows(raw: Record<string, string>[]): {
       dial_sequence: r.dial_sequence?.trim() || "list_dial",
       max_ring_time: r.max_ring_time ? Number(r.max_ring_time) : 60,
       retry_period: r.retry_period ? Number(r.retry_period) : 60,
+      custom_field_defs: cfDefs,
     });
   }
 
@@ -73,7 +156,8 @@ export default function UploadView({ onParsed }: Props) {
           setParseErr(`CSV parse error: ${result.errors[0].message}`);
           return;
         }
-        const { rows, errors } = parseRows(result.data);
+        const headers = result.meta.fields ?? [];
+        const { rows, errors } = parseRows(result.data, headers);
         onParsed(rows, errors, file.name);
       },
     });
@@ -162,6 +246,17 @@ export default function UploadView({ onParsed }: Props) {
         </p>
         <p className="mt-1 text-slate-400">
           Queue, phone number, business hours, and DNC list are selected on the next screen.
+        </p>
+        <p className="mt-3 font-semibold text-slate-700">Custom field columns (optional)</p>
+        <p className="mt-1 text-slate-500">
+          Add columns like <span className="font-mono text-slate-700">cf:UMMHC Patient ID:string</span> to define contact-list custom fields. Format:
+        </p>
+        <ul className="mt-1 ml-4 list-disc space-y-0.5 text-slate-500">
+          <li><span className="font-mono">cf:&lt;name&gt;:&lt;type&gt;</span> — type is string, number, boolean, email, phone, percent, currency, date_time, or pick_list</li>
+          <li><span className="font-mono">cf:Status:pick_list:active|inactive|pending</span> — picklists need <span className="font-mono">|</span>-separated values</li>
+        </ul>
+        <p className="mt-1 text-slate-400">
+          Cell values for <span className="font-mono">cf:</span> columns are ignored here — they're populated when you import contacts.
         </p>
       </div>
     </div>

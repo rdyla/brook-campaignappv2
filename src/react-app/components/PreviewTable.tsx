@@ -6,6 +6,7 @@ import type {
   RowOverride,
   ResolvedCampaignRow,
   BatchRequest,
+  CustomFieldDef,
 } from "../types";
 
 interface Props {
@@ -21,12 +22,10 @@ interface Props {
 }
 
 interface GlobalSelections {
-  unit_id: string;
   queue_id: string;
   phone_number_id: string;
   business_hour_id: string;
   dnc_list_id: string;
-  custom_field_ids: string[];
 }
 
 function Select({
@@ -59,50 +58,20 @@ function Select({
   );
 }
 
-function MultiSelect({
-  values,
-  onChange,
-  options,
-  disabled,
-}: {
-  values: string[];
-  onChange: (ids: string[]) => void;
-  options: { id: string; label: string }[];
-  disabled?: boolean;
-}) {
-  function toggle(id: string) {
-    onChange(values.includes(id) ? values.filter((v) => v !== id) : [...values, id]);
-  }
-
-  if (options.length === 0) {
-    return (
-      <p className="text-xs text-slate-400 italic py-1">
-        {disabled ? "Loading…" : "None available"}
-      </p>
-    );
-  }
-
+function CustomFieldChip({ def }: { def: CustomFieldDef }) {
+  const detail =
+    def.data_type === "pick_list" && def.pick_list_values?.length
+      ? `pick_list (${def.pick_list_values.join(", ")})`
+      : def.data_type;
   return (
-    <div
-      className={`border border-slate-300 rounded-lg bg-white max-h-36 overflow-y-auto${
-        disabled ? " opacity-50 pointer-events-none" : ""
-      }`}
+    <span
+      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] bg-indigo-50 border border-indigo-200 text-indigo-700"
+      title={detail}
     >
-      {options.map((o) => (
-        <label
-          key={o.id}
-          className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-50 cursor-pointer"
-        >
-          <input
-            type="checkbox"
-            checked={values.includes(o.id)}
-            onChange={() => toggle(o.id)}
-            className="w-3.5 h-3.5 rounded border-slate-300 accent-blue-600 shrink-0"
-          />
-          <span className="text-sm text-slate-700">{o.label}</span>
-        </label>
-      ))}
-    </div>
+      <span className="font-medium">{def.name}</span>
+      <span className="text-indigo-400">·</span>
+      <span className="text-indigo-500">{def.data_type}</span>
+    </span>
   );
 }
 
@@ -118,39 +87,24 @@ export default function PreviewTable({
   onBack,
 }: Props) {
   const [globals, setGlobals] = useState<GlobalSelections>({
-    unit_id: "",
     queue_id: "",
     phone_number_id: "",
     business_hour_id: "",
     dnc_list_id: "",
-    custom_field_ids: [],
   });
 
   const [overrides, setOverrides] = useState<Map<number, RowOverride>>(new Map());
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
 
-  function setGlobal(field: keyof Omit<GlobalSelections, "custom_field_ids">, value: string) {
+  function setGlobal(field: keyof GlobalSelections, value: string) {
     setGlobals((g) => ({ ...g, [field]: value }));
   }
 
-  function setGlobalCustomFields(ids: string[]) {
-    setGlobals((g) => ({ ...g, custom_field_ids: ids }));
-  }
-
-  function setOverride(rowIdx: number, field: keyof Omit<RowOverride, "custom_field_ids">, value: string) {
+  function setOverride(rowIdx: number, field: keyof RowOverride, value: string) {
     setOverrides((prev) => {
       const next = new Map(prev);
       const current = next.get(rowIdx) ?? {};
       next.set(rowIdx, { ...current, [field]: value || undefined });
-      return next;
-    });
-  }
-
-  function setOverrideCustomFields(rowIdx: number, ids: string[]) {
-    setOverrides((prev) => {
-      const next = new Map(prev);
-      const current = next.get(rowIdx) ?? {};
-      next.set(rowIdx, { ...current, custom_field_ids: ids.length > 0 ? ids : undefined });
       return next;
     });
   }
@@ -170,7 +124,6 @@ export default function PreviewTable({
       phone_number_id: ov.phone_number_id || globals.phone_number_id || undefined,
       business_hour_id: ov.business_hour_id || globals.business_hour_id || undefined,
       dnc_list_id: ov.dnc_list_id || globals.dnc_list_id || undefined,
-      custom_field_ids: ov.custom_field_ids ?? globals.custom_field_ids,
     };
   }
 
@@ -178,7 +131,6 @@ export default function PreviewTable({
     !catalogLoading &&
     !catalogError &&
     catalog !== null &&
-    globals.unit_id !== "" &&
     globals.queue_id !== "" &&
     globals.phone_number_id !== "" &&
     rows.length > 0;
@@ -192,14 +144,11 @@ export default function PreviewTable({
         phone_number_id: r.phone_number_id!,
         business_hour_id: r.business_hour_id || undefined,
         dnc_list_id: r.dnc_list_id || undefined,
-        custom_field_ids: r.custom_field_ids?.length ? r.custom_field_ids : undefined,
       };
     });
-    onConfirm({ rows: resolved, unit_id: globals.unit_id });
+    onConfirm({ rows: resolved });
   }
 
-  const unitOpts = catalog?.units.map((u) => ({ id: u.id, label: u.name })) ?? [];
-  const customFieldOpts = catalog?.addressBookCustomFields.map((f) => ({ id: f.id, label: f.name })) ?? [];
   const queueOpts = catalog?.queues.map((q) => ({ id: q.id, label: q.name })) ?? [];
   const phoneOpts = catalog?.phoneNumbers.map((p) => ({ id: p.id, label: p.label })) ?? [];
   const bizOpts = catalog?.businessHours.map((b) => ({ id: b.id, label: b.name })) ?? [];
@@ -209,9 +158,11 @@ export default function PreviewTable({
     return opts.find((o) => o.id === id)?.label ?? id;
   }
 
+  // CF defs are header-derived, so the same set applies to every row
+  const cfDefs = rows[0]?.custom_field_defs ?? [];
+
   return (
     <div className="space-y-5">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-semibold text-slate-800">Configure &amp; confirm</h2>
@@ -221,7 +172,7 @@ export default function PreviewTable({
             <span className="text-emerald-600 font-medium">{rows.length} campaign{rows.length !== 1 ? "s" : ""}</span>
             {errors.length > 0 && (
               <span className="text-amber-500 font-medium ml-2">
-                {errors.length} row{errors.length > 1 ? "s" : ""} skipped
+                {errors.length} issue{errors.length > 1 ? "s" : ""}
               </span>
             )}
           </p>
@@ -243,15 +194,35 @@ export default function PreviewTable({
         </div>
       </div>
 
-      {/* Parse errors */}
       {errors.length > 0 && (
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-1">
-          <p className="text-sm font-medium text-amber-700 mb-1">Rows skipped due to errors:</p>
-          {errors.map((e) => (
-            <p key={e.row} className="text-xs text-amber-600">
-              Row {e.row}: {e.message}
+          <p className="text-sm font-medium text-amber-700 mb-1">CSV issues:</p>
+          {errors.map((e, i) => (
+            <p key={i} className="text-xs text-amber-600">
+              {e.row > 0 ? `Row ${e.row}: ` : "Header: "}{e.message}
             </p>
           ))}
+        </div>
+      )}
+
+      {/* Custom field summary */}
+      {cfDefs.length > 0 && (
+        <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-3">
+          <div className="flex items-start gap-3">
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-indigo-800 mb-1.5">
+                Custom fields detected — {cfDefs.length} field{cfDefs.length !== 1 ? "s" : ""} will be attached to each contact list
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {cfDefs.map((d) => (
+                  <CustomFieldChip key={d.name} def={d} />
+                ))}
+              </div>
+              <p className="text-xs text-indigo-600 mt-2">
+                Existing fields with the same name are reused (Zoom limit: 50 contact lists per field).
+              </p>
+            </div>
+          </div>
         </div>
       )}
 
@@ -279,19 +250,7 @@ export default function PreviewTable({
             </button>
           </div>
         ) : (
-          <div className="grid grid-cols-3 gap-4">
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1.5">
-                Address book unit <span className="text-red-500">*</span>
-              </label>
-              <Select
-                value={globals.unit_id}
-                onChange={(v) => setGlobal("unit_id", v)}
-                placeholder="Select a unit…"
-                options={unitOpts}
-                disabled={catalogLoading}
-              />
-            </div>
+          <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1.5">
                 Queue <span className="text-red-500">*</span>
@@ -340,17 +299,6 @@ export default function PreviewTable({
                 disabled={catalogLoading}
               />
             </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1.5">
-                Address book custom fields <span className="text-slate-400 font-normal">(optional)</span>
-              </label>
-              <MultiSelect
-                values={globals.custom_field_ids}
-                onChange={setGlobalCustomFields}
-                options={customFieldOpts}
-                disabled={catalogLoading}
-              />
-            </div>
           </div>
         )}
       </div>
@@ -376,9 +324,7 @@ export default function PreviewTable({
                 const r = resolvedFor(i);
                 const isExpanded = expandedRows.has(i);
                 const ov = overrides.get(i) ?? {};
-                const hasOverride = Object.values(ov).some((v) =>
-                  Array.isArray(v) ? v.length > 0 : Boolean(v)
-                );
+                const hasOverride = Object.values(ov).some((v) => Boolean(v));
 
                 return (
                   <>
@@ -475,21 +421,6 @@ export default function PreviewTable({
                                   onChange={(v) => setOverride(i, "dnc_list_id", v)}
                                   placeholder={`Default: ${globals.dnc_list_id ? labelFor(dncOpts, globals.dnc_list_id) : "none"}`}
                                   options={dncOpts}
-                                />
-                              </div>
-                              <div className="col-span-2">
-                                <label className="block text-xs text-slate-500 mb-1">
-                                  Custom fields
-                                  {globals.custom_field_ids.length > 0 && !ov.custom_field_ids && (
-                                    <span className="ml-1 text-slate-400">
-                                      (default: {globals.custom_field_ids.map((id) => labelFor(customFieldOpts, id)).join(", ")})
-                                    </span>
-                                  )}
-                                </label>
-                                <MultiSelect
-                                  values={ov.custom_field_ids ?? []}
-                                  onChange={(ids) => setOverrideCustomFields(i, ids)}
-                                  options={customFieldOpts}
                                 />
                               </div>
                             </div>

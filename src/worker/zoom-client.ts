@@ -29,12 +29,44 @@ async function zoomPost(env: ZoomEnv, path: string, body: unknown): Promise<Reco
   });
   const data = (await r.json()) as Record<string, unknown>;
   if (!r.ok) {
-    // Include full response + the payload we sent so errors are debuggable
     throw new Error(
       `HTTP ${r.status} from ${path} | response: ${JSON.stringify(data)} | payload: ${JSON.stringify(body)}`
     );
   }
   return data;
+}
+
+async function zoomPatch(env: ZoomEnv, path: string, body: unknown): Promise<Record<string, unknown>> {
+  const token = await getAccessToken(env);
+  const r = await fetch(`${CC_BASE}${path}`, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const data = (await r.json()) as Record<string, unknown>;
+    throw new Error(
+      `HTTP ${r.status} from ${path} | response: ${JSON.stringify(data)} | payload: ${JSON.stringify(body)}`
+    );
+  }
+  const text = await r.text();
+  return text ? (JSON.parse(text) as Record<string, unknown>) : {};
+}
+
+async function zoomDelete(env: ZoomEnv, path: string): Promise<void> {
+  const token = await getAccessToken(env);
+  const r = await fetch(`${CC_BASE}${path}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({})) as Record<string, unknown>;
+    const msg = typeof data?.message === "string" ? data.message : JSON.stringify(data);
+    throw new Error(`HTTP ${r.status}: ${msg}`);
+  }
 }
 
 async function fetchAllPages<T>(
@@ -57,12 +89,6 @@ async function fetchAllPages<T>(
 }
 
 // ── Catalog list functions ─────────────────────────────────────────────────
-
-export async function listUnits(env: ZoomEnv) {
-  type U = { unit_id: string; unit_name: string };
-  const items = await fetchAllPages<U>(env, `${CC_BASE}/address_books/units`, "units");
-  return items.map((u) => ({ id: u.unit_id, name: u.unit_name }));
-}
 
 export async function listQueues(env: ZoomEnv) {
   type Q = { cc_queue_id: string; queue_name: string };
@@ -99,14 +125,6 @@ export async function listBusinessHours(env: ZoomEnv) {
   return items.map((b) => ({ id: b.business_hour_id, name: b.business_hour_name }));
 }
 
-export async function listAddressBooks(env: ZoomEnv, unitId: string) {
-  type AB = { address_book_id: string; address_book_name: string };
-  const items = await fetchAllPages<AB>(env, `${CC_BASE}/address_books`, "address_books", {
-    unit_id: unitId,
-  });
-  return items.map((ab) => ({ id: ab.address_book_id, name: ab.address_book_name }));
-}
-
 export async function listContactLists(env: ZoomEnv) {
   type C = { contact_list_id: string; contact_list_name: string };
   const items = await fetchAllPages<C>(
@@ -117,72 +135,178 @@ export async function listContactLists(env: ZoomEnv) {
   return items.map((c) => ({ id: c.contact_list_id, name: c.contact_list_name }));
 }
 
-// ── Campaign creation functions ────────────────────────────────────────────
+// ── Contact list custom field types ────────────────────────────────────────
 
-export async function createAddressBook(
-  env: ZoomEnv,
-  name: string,
-  description: string,
-  unitId: string
-): Promise<Record<string, unknown>> {
-  return zoomPost(env, "/address_books", {
-    unit_id: unitId,
-    address_book_name: name,
-    address_book_description: description,
-  });
+export type CFDataType =
+  | "string"
+  | "number"
+  | "boolean"
+  | "email"
+  | "phone"
+  | "percent"
+  | "currency"
+  | "date_time"
+  | "pick_list";
+
+interface RawContactListCustomField {
+  custom_field_id: string;
+  custom_field_name: string;
+  data_type: CFDataType;
+  default_value?: string;
+  pick_list_values?: string[];
+  contact_list_ids?: string[];
+  use_as_routing_profile_parameter?: boolean;
+  use_as_external_url_parameter?: boolean;
+  show_in_transferred_calls?: boolean;
+  allow_third_party_access?: boolean;
+  show_in_inbound_notification?: boolean;
+  show_in_profile_tab?: boolean;
 }
 
-export async function listAddressBookCustomFields(env: ZoomEnv) {
-  type CF = { custom_field_id: string; custom_field_name: string };
-  const data = await zoomGet(env, `${CC_BASE}/address_books/custom_fields`);
-  const fields = (data.custom_fields as CF[]) ?? [];
-  return fields.map((f) => ({ id: f.custom_field_id, name: f.custom_field_name }));
+const CF_DEFAULT_FLAGS = {
+  use_as_routing_profile_parameter: false,
+  use_as_external_url_parameter: false,
+  show_in_transferred_calls: true,
+  allow_third_party_access: false,
+  show_in_inbound_notification: true,
+  show_in_profile_tab: false,
+} as const;
+
+const CF_LIST_LIMIT = 50;
+
+// ── Contact list custom fields ─────────────────────────────────────────────
+
+export async function listContactListCustomFields(env: ZoomEnv): Promise<RawContactListCustomField[]> {
+  return fetchAllPages<RawContactListCustomField>(
+    env,
+    `${CC_BASE}/outbound_campaign/contact_list_custom_fields`,
+    "custom_fields"
+  );
 }
 
-export async function associateCustomFieldWithAddressBook(
+export async function getContactListCustomField(
   env: ZoomEnv,
-  customFieldId: string,
-  addressBookId: string
-): Promise<void> {
-  type CF = {
-    custom_field_id: string;
-    custom_field_name: string;
-    custom_field_description?: string;
-    data_type: string;
-    default_value?: string;
-    pick_list_values?: string[];
-    address_books?: { address_book_id: string }[];
-    use_as_routing_profile_parameter?: boolean;
-    use_as_external_url_parameter?: boolean;
-    show_in_transferred_calls?: boolean;
-    show_in_inbound_notification?: boolean;
-    show_in_profile_tab?: boolean;
-  };
-  const data = await zoomGet(env, `${CC_BASE}/address_books/custom_fields`);
-  const fields = (data.custom_fields as CF[]) ?? [];
-  const field = fields.find((f) => f.custom_field_id === customFieldId);
-  if (!field) throw new Error(`Custom field ${customFieldId} not found`);
+  customFieldId: string
+): Promise<RawContactListCustomField> {
+  const data = await zoomGet(
+    env,
+    `${CC_BASE}/outbound_campaign/contact_list_custom_fields/${customFieldId}`
+  );
+  return data as unknown as RawContactListCustomField;
+}
 
-  const currentIds = (field.address_books ?? []).map((ab) => ab.address_book_id);
-  if (currentIds.includes(addressBookId)) return;
+export async function getCustomFieldsForContactList(env: ZoomEnv, contactListId: string) {
+  const all = await listContactListCustomFields(env);
+  return all
+    .filter((f) => f.contact_list_ids?.includes(contactListId))
+    .map((f) => ({
+      id: f.custom_field_id,
+      name: f.custom_field_name,
+      data_type: f.data_type,
+      pick_list_values: f.pick_list_values ?? [],
+    }));
+}
 
-  // PATCH requires the full field definition alongside updated address_book_ids
+interface CustomFieldDef {
+  name: string;
+  data_type: CFDataType;
+  pick_list_values?: string[];
+}
+
+export interface CustomFieldAttachResult {
+  custom_field_id: string;
+  custom_field_name: string;
+  reused: boolean;
+}
+
+/**
+ * Attach a custom field (by name) to a contact list. Reuses an existing CF if
+ * one with the same name already exists; otherwise creates a fresh one.
+ *
+ * Throws CFLimitError when the existing CF is at Zoom's 50-list ceiling.
+ */
+export class CFLimitError extends Error {
+  constructor(public readonly fieldName: string) {
+    super(
+      `Custom field "${fieldName}" is at Zoom's ${CF_LIST_LIMIT}-contact-list limit — rename in CSV (e.g. split UMMHC → UMMHC-A, UMMHC-B)`
+    );
+    this.name = "CFLimitError";
+  }
+}
+
+export async function attachCustomFieldToContactList(
+  env: ZoomEnv,
+  def: CustomFieldDef,
+  contactListId: string,
+  existingFields?: RawContactListCustomField[]
+): Promise<CustomFieldAttachResult> {
+  const all = existingFields ?? (await listContactListCustomFields(env));
+  const existing = all.find((f) => f.custom_field_name === def.name);
+
+  if (existing) {
+    const currentIds = existing.contact_list_ids ?? [];
+    if (currentIds.includes(contactListId)) {
+      return {
+        custom_field_id: existing.custom_field_id,
+        custom_field_name: existing.custom_field_name,
+        reused: true,
+      };
+    }
+    if (currentIds.length >= CF_LIST_LIMIT) {
+      throw new CFLimitError(def.name);
+    }
+
+    // PATCH requires the full field definition + updated contact_list_ids
+    const body: Record<string, unknown> = {
+      custom_field_name: existing.custom_field_name,
+      data_type: existing.data_type,
+      contact_list_ids: [...currentIds, contactListId],
+      use_as_routing_profile_parameter:
+        existing.use_as_routing_profile_parameter ?? CF_DEFAULT_FLAGS.use_as_routing_profile_parameter,
+      use_as_external_url_parameter:
+        existing.use_as_external_url_parameter ?? CF_DEFAULT_FLAGS.use_as_external_url_parameter,
+      show_in_transferred_calls:
+        existing.show_in_transferred_calls ?? CF_DEFAULT_FLAGS.show_in_transferred_calls,
+      allow_third_party_access:
+        existing.allow_third_party_access ?? CF_DEFAULT_FLAGS.allow_third_party_access,
+      show_in_inbound_notification:
+        existing.show_in_inbound_notification ?? CF_DEFAULT_FLAGS.show_in_inbound_notification,
+      show_in_profile_tab: existing.show_in_profile_tab ?? CF_DEFAULT_FLAGS.show_in_profile_tab,
+    };
+    if (existing.default_value !== undefined) body.default_value = existing.default_value;
+    if (existing.pick_list_values?.length) body.pick_list_values = existing.pick_list_values;
+
+    await zoomPatch(
+      env,
+      `/outbound_campaign/contact_list_custom_fields/${existing.custom_field_id}`,
+      body
+    );
+
+    return {
+      custom_field_id: existing.custom_field_id,
+      custom_field_name: existing.custom_field_name,
+      reused: true,
+    };
+  }
+
+  // Create fresh
   const body: Record<string, unknown> = {
-    custom_field_name: field.custom_field_name,
-    data_type: field.data_type,
-    address_book_ids: [...currentIds, addressBookId],
-    use_as_routing_profile_parameter: field.use_as_routing_profile_parameter ?? false,
-    use_as_external_url_parameter: field.use_as_external_url_parameter ?? false,
-    show_in_transferred_calls: field.show_in_transferred_calls ?? false,
-    show_in_inbound_notification: field.show_in_inbound_notification ?? false,
-    show_in_profile_tab: field.show_in_profile_tab ?? false,
+    custom_field_name: def.name,
+    data_type: def.data_type,
+    contact_list_ids: [contactListId],
+    ...CF_DEFAULT_FLAGS,
   };
-  if (field.custom_field_description) body.custom_field_description = field.custom_field_description;
-  if (field.default_value !== undefined) body.default_value = field.default_value;
-  if (field.pick_list_values) body.pick_list_values = field.pick_list_values;
+  if (def.data_type === "pick_list" && def.pick_list_values?.length) {
+    body.pick_list_values = def.pick_list_values;
+    body.default_value = def.pick_list_values[0];
+  }
 
-  await zoomPatch(env, `/address_books/custom_fields/${customFieldId}`, body);
+  const created = await zoomPost(env, "/outbound_campaign/contact_list_custom_fields", body);
+  const newId = (created.custom_field_id ?? created.id) as string;
+  return { custom_field_id: newId, custom_field_name: def.name, reused: false };
 }
+
+// ── Contact list + campaign creation ───────────────────────────────────────
 
 export async function createContactList(
   env: ZoomEnv,
@@ -196,41 +320,52 @@ export async function createContactList(
   });
 }
 
-
-// ── Cleanup list + delete functions ───────────────────────────────────────
-
-async function zoomPatch(env: ZoomEnv, path: string, body: unknown): Promise<Record<string, unknown>> {
-  const token = await getAccessToken(env);
-  const r = await fetch(`${CC_BASE}${path}`, {
-    method: "PATCH",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) {
-    const data = (await r.json()) as Record<string, unknown>;
-    throw new Error(
-      `HTTP ${r.status} from ${path} | response: ${JSON.stringify(data)} | payload: ${JSON.stringify(body)}`
-    );
-  }
-  const text = await r.text();
-  return text ? (JSON.parse(text) as Record<string, unknown>) : {};
+export async function createCampaign(
+  env: ZoomEnv,
+  payload: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  return zoomPost(env, "/outbound_campaign/campaigns", payload);
 }
 
-async function zoomDelete(env: ZoomEnv, path: string): Promise<void> {
-  const token = await getAccessToken(env);
-  const r = await fetch(`${CC_BASE}${path}`, {
-    method: "DELETE",
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!r.ok) {
-    const data = await r.json().catch(() => ({})) as Record<string, unknown>;
-    const msg = typeof data?.message === "string" ? data.message : JSON.stringify(data);
-    throw new Error(`HTTP ${r.status}: ${msg}`);
-  }
+// ── Contact import ─────────────────────────────────────────────────────────
+
+export interface ContactPhone {
+  contact_phone_number: string;
+  contact_phone_type: "Main" | "Work" | "Home" | "Mobile" | "Other";
 }
+
+export interface ContactCustomFieldValue {
+  custom_field_id: string;
+  custom_field_value: string;
+}
+
+export interface ContactPayload {
+  contact_display_name: string;
+  contact_first_name?: string;
+  contact_last_name?: string;
+  contact_phones: ContactPhone[];
+  contact_emails?: string[];
+  contact_location?: string;
+  contact_account_number?: string;
+  contact_company?: string;
+  contact_role?: string;
+  contact_timezone?: string;
+  custom_fields?: ContactCustomFieldValue[];
+}
+
+export async function addContactToList(
+  env: ZoomEnv,
+  contactListId: string,
+  contact: ContactPayload
+): Promise<Record<string, unknown>> {
+  return zoomPost(
+    env,
+    `/outbound_campaign/contact_lists/${contactListId}/contacts`,
+    contact
+  );
+}
+
+// ── Cleanup list + delete ──────────────────────────────────────────────────
 
 export async function listCampaigns(env: ZoomEnv) {
   type C = { outbound_campaign_id: string; outbound_campaign_name: string };
@@ -249,17 +384,4 @@ export async function deleteCampaign(env: ZoomEnv, id: string): Promise<void> {
 
 export async function deleteContactList(env: ZoomEnv, id: string): Promise<void> {
   return zoomDelete(env, `/outbound_campaign/contact_lists/${id}`);
-}
-
-export async function deleteAddressBook(env: ZoomEnv, id: string): Promise<void> {
-  return zoomDelete(env, `/address_books/${id}`);
-}
-
-// ── Campaign creation functions ────────────────────────────────────────────
-
-export async function createCampaign(
-  env: ZoomEnv,
-  payload: Record<string, unknown>
-): Promise<Record<string, unknown>> {
-  return zoomPost(env, "/outbound_campaign/campaigns", payload);
 }
