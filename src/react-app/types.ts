@@ -65,7 +65,16 @@ export interface ExistingCampaignOption {
 export interface AddressBookOption {
   id: string;
   name: string;
+  unit_id: string;
+  unit_name: string;
   custom_field_count: number;
+  total_contacts?: number;
+}
+
+export interface AddressBookUnitOption {
+  id: string;
+  name: string;
+  description?: string;
 }
 
 export interface Catalog {
@@ -75,6 +84,7 @@ export interface Catalog {
   contactLists: ContactListOption[];
   existingCampaigns: ExistingCampaignOption[];
   addressBooks: AddressBookOption[];
+  addressBookUnits: AddressBookUnitOption[];
 }
 
 export interface BatchRequest {
@@ -149,6 +159,7 @@ export interface BatchRun {
 
 export interface CreateAddressBookRequest {
   name: string;
+  unit_id: string;
   description?: string;
 }
 

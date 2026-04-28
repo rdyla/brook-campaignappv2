@@ -136,54 +136,102 @@ export async function listContactLists(env: ZoomEnv) {
 }
 
 // ── Address books ──────────────────────────────────────────────────────────
-// Address books own the custom-field schema used by their contacts. We list
-// them for the user to pick from, and offer a "create new" path that
-// auto-attaches every existing org-level custom field (per the project plan
-// of <50 CFs per org and 3–4 ABs).
+// Address books are scoped to "units". To list ABs we first GET /units, then
+// per unit GET /address_books?unit_id=… and flatten. Creating an AB also
+// requires a unit_id in the body.
+//
+// Custom fields (managed in Zoom UI) get auto-attached to new ABs — we list
+// the org-level CF inventory and PATCH each to add the new AB's id to its
+// address_book_ids array.
+
+interface RawAddressBookUnit {
+  unit_id: string;
+  unit_name: string;
+  unit_description?: string;
+}
+
+export interface AddressBookUnitSummary {
+  id: string;
+  name: string;
+  description?: string;
+}
+
+export async function listAddressBookUnits(env: ZoomEnv): Promise<AddressBookUnitSummary[]> {
+  const items = await fetchAllPages<RawAddressBookUnit>(
+    env,
+    `${CC_BASE}/address_books/units`,
+    "units"
+  );
+  return items.map((u) => ({
+    id: u.unit_id,
+    name: u.unit_name,
+    description: u.unit_description,
+  }));
+}
 
 interface RawAddressBook {
   address_book_id: string;
   address_book_name: string;
+  address_book_description?: string;
+  total_contacts?: number;
+  unit_id?: string;
+  unit_name?: string;
 }
 
 export interface AddressBookSummary {
   id: string;
   name: string;
+  unit_id: string;
+  unit_name: string;
   custom_field_count: number;
+  total_contacts?: number;
 }
 
 export async function listAddressBooks(env: ZoomEnv): Promise<AddressBookSummary[]> {
-  const items = await fetchAllPages<RawAddressBook>(
-    env,
-    `${CC_BASE}/address_books`,
-    "address_books"
-  );
-  // Custom-field counts come from the CF inventory, since the AB list
-  // endpoint doesn't appear to include them. One extra round-trip per page
-  // load is fine — there are only ever a handful of ABs.
+  const units = await listAddressBookUnits(env);
+  const all: AddressBookSummary[] = [];
+  for (const unit of units) {
+    const items = await fetchAllPages<RawAddressBook>(
+      env,
+      `${CC_BASE}/address_books`,
+      "address_books",
+      { unit_id: unit.id }
+    );
+    for (const a of items) {
+      all.push({
+        id: a.address_book_id,
+        name: a.address_book_name,
+        unit_id: a.unit_id ?? unit.id,
+        unit_name: a.unit_name ?? unit.name,
+        custom_field_count: 0,
+        total_contacts: a.total_contacts,
+      });
+    }
+  }
+  // Fill in CF counts. Soft-fail if the CF endpoint isn't reachable — better
+  // to show ABs with "0 fields" than to fail the whole catalog load.
   let cfs: RawAddressBookCustomField[] = [];
   try {
     cfs = await listAddressBookCustomFields(env);
   } catch {
-    // Soft-fail: if the CF endpoint is unavailable, return ABs with count 0
-    // and let the caller surface the error elsewhere.
+    // ignored
   }
-  return items.map((a) => ({
-    id: a.address_book_id,
-    name: a.address_book_name,
-    custom_field_count: cfs.filter((f) => (f.address_book_ids ?? []).includes(a.address_book_id))
-      .length,
-  }));
+  for (const ab of all) {
+    ab.custom_field_count = cfs.filter((f) => (f.address_book_ids ?? []).includes(ab.id)).length;
+  }
+  return all;
 }
 
 export async function createAddressBook(
   env: ZoomEnv,
   name: string,
+  unitId: string,
   description = ""
 ): Promise<{ id: string }> {
   const created = await zoomPost(env, "/address_books", {
     address_book_name: name,
     address_book_description: description,
+    unit_id: unitId,
   });
   const id = (created.address_book_id ?? created.id) as string;
   if (!id) {

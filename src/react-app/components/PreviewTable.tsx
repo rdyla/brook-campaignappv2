@@ -8,6 +8,7 @@ import type {
   BatchRequest,
   BatchResult,
   CreateAddressBookResult,
+  AddressBookUnitOption,
 } from "../types";
 import { resolveRows, describeSkipReason, type ResolvedRow } from "../lib/resolver";
 
@@ -413,7 +414,7 @@ export default function PreviewTable({
                   </option>
                   {catalog?.addressBooks.map((ab) => (
                     <option key={ab.id} value={ab.id}>
-                      {ab.name} ({ab.custom_field_count} custom field{ab.custom_field_count === 1 ? "" : "s"})
+                      {ab.unit_name} / {ab.name} ({ab.custom_field_count} custom field{ab.custom_field_count === 1 ? "" : "s"})
                     </option>
                   ))}
                   <option value="__create__">+ Create new address book…</option>
@@ -739,6 +740,7 @@ export default function PreviewTable({
 
       {createABModalOpen && (
         <CreateAddressBookModal
+          units={catalog?.addressBookUnits ?? []}
           onClose={() => setCreateABModalOpen(false)}
           onCreated={(result) => {
             setGlobal("address_book_id", result.id);
@@ -753,13 +755,16 @@ export default function PreviewTable({
 }
 
 function CreateAddressBookModal({
+  units,
   onClose,
   onCreated,
 }: {
+  units: AddressBookUnitOption[];
   onClose: () => void;
   onCreated: (result: CreateAddressBookResult) => void;
 }) {
   const [name, setName] = useState("");
+  const [unitId, setUnitId] = useState(units.length === 1 ? units[0].id : "");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [partial, setPartial] = useState<CreateAddressBookResult | null>(null);
@@ -769,13 +774,17 @@ function CreateAddressBookModal({
       setError("Name is required");
       return;
     }
+    if (!unitId) {
+      setError("Pick a unit");
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
       const r = await fetch("/api/address-books", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim() }),
+        body: JSON.stringify({ name: name.trim(), unit_id: unitId }),
       });
       const data = (await r.json()) as CreateAddressBookResult & { error?: string };
       if (!r.ok) {
@@ -861,6 +870,32 @@ function CreateAddressBookModal({
                 placeholder="e.g. UMMHC Patients"
               />
             </div>
+
+            {units.length > 1 && (
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1.5">
+                  Unit <span className="text-red-500">*</span>
+                </label>
+                <select
+                  value={unitId}
+                  onChange={(e) => setUnitId(e.target.value)}
+                  disabled={submitting}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">Select a unit…</option>
+                  {units.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {units.length === 0 && (
+              <div className="bg-amber-50 border border-amber-200 rounded px-3 py-2 text-sm text-amber-800">
+                No address book units found in your Zoom account. Create a unit in Zoom first.
+              </div>
+            )}
 
             {error && (
               <div className="bg-red-50 border border-red-200 rounded px-3 py-2 text-sm text-red-700">

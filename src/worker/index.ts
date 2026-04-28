@@ -10,6 +10,7 @@ import {
   deleteCampaign,
   deleteContactList,
   listAddressBooks,
+  listAddressBookUnits,
   createAddressBook,
   attachAllCustomFieldsToAddressBook,
   getCustomFieldsForAddressBook,
@@ -39,16 +40,26 @@ app.get("/api/catalog", async (c) => {
   // Pre-warm token so parallel calls share it
   await getAccessToken(c.env);
 
-  const [queues, phoneNumbers, businessHours, contactLists, existingCampaigns, addressBooks] =
-    await Promise.all([
-      listQueues(c.env),
-      listPhoneNumbers(c.env),
-      listBusinessHours(c.env),
-      listContactLists(c.env),
-      // null status → all campaigns (active + inactive) for dedup checks on import
-      listCampaigns(c.env, null).catch(() => [] as { id: string; name: string }[]),
-      listAddressBooks(c.env).catch(() => [] as Awaited<ReturnType<typeof listAddressBooks>>),
-    ]);
+  const [
+    queues,
+    phoneNumbers,
+    businessHours,
+    contactLists,
+    existingCampaigns,
+    addressBooks,
+    addressBookUnits,
+  ] = await Promise.all([
+    listQueues(c.env),
+    listPhoneNumbers(c.env),
+    listBusinessHours(c.env),
+    listContactLists(c.env),
+    // null status → all campaigns (active + inactive) for dedup checks on import
+    listCampaigns(c.env, null).catch(() => [] as { id: string; name: string }[]),
+    listAddressBooks(c.env).catch(() => [] as Awaited<ReturnType<typeof listAddressBooks>>),
+    listAddressBookUnits(c.env).catch(
+      () => [] as Awaited<ReturnType<typeof listAddressBookUnits>>
+    ),
+  ]);
 
   return c.json({
     queues,
@@ -57,6 +68,7 @@ app.get("/api/catalog", async (c) => {
     contactLists,
     existingCampaigns,
     addressBooks,
+    addressBookUnits,
   });
 });
 
@@ -188,10 +200,14 @@ app.post("/api/address-books", async (c) => {
   if (!name) {
     return c.json({ error: "Address book name is required" }, 400);
   }
+  const unitId = body.unit_id?.trim();
+  if (!unitId) {
+    return c.json({ error: "unit_id is required" }, 400);
+  }
 
   let id: string;
   try {
-    ({ id } = await createAddressBook(c.env, name, body.description ?? ""));
+    ({ id } = await createAddressBook(c.env, name, unitId, body.description ?? ""));
   } catch (err) {
     return c.json({ error: `Create failed: ${(err as Error).message}` }, 500);
   }
