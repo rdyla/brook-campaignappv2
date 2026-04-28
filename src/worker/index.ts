@@ -1,13 +1,12 @@
 import { Hono } from "hono";
 import {
-  createAddressBook,
-  associateCustomFieldWithAddressBook,
-  fetchCustomFieldsRaw,
   createContactList,
   createCampaign,
-  listUnits,
-  listAddressBookCustomFields,
-  listAddressBooks,
+  attachCustomFieldToContactList,
+  listContactListCustomFields,
+  getCustomFieldsForContactList,
+  addContactToList,
+  CFLimitError,
   listQueues,
   listPhoneNumbers,
   listBusinessHours,
@@ -15,10 +14,18 @@ import {
   listCampaigns,
   deleteCampaign,
   deleteContactList,
-  deleteAddressBook,
+  type ContactPayload,
 } from "./zoom-client";
 import { getAccessToken } from "./zoom-auth";
-import type { ResolvedCampaignRow, CampaignResult, BatchResult, BatchRequest, CleanupDeleteRequest } from "../react-app/types";
+import type {
+  ResolvedCampaignRow,
+  CampaignResult,
+  BatchResult,
+  BatchRequest,
+  CleanupDeleteRequest,
+  ContactImportRequest,
+  ContactImportItemResult,
+} from "../react-app/types";
 
 interface AppEnv extends Env {
   ZOOM_ACCOUNT_ID: string;
@@ -33,14 +40,12 @@ app.get("/api/catalog", async (c) => {
   // Pre-warm token so parallel calls share it
   await getAccessToken(c.env);
 
-  const [queues, phoneNumbers, businessHours, contactLists, units, addressBookCustomFields, existingCampaigns] =
+  const [queues, phoneNumbers, businessHours, contactLists, existingCampaigns] =
     await Promise.all([
       listQueues(c.env),
       listPhoneNumbers(c.env),
       listBusinessHours(c.env),
       listContactLists(c.env),
-      listUnits(c.env),
-      listAddressBookCustomFields(c.env),
       // null status → all campaigns (active + inactive) for dedup checks on import
       listCampaigns(c.env, null).catch(() => [] as { id: string; name: string }[]),
     ]);
@@ -50,95 +55,44 @@ app.get("/api/catalog", async (c) => {
     phoneNumbers,
     businessHours,
     contactLists,
-    units,
-    addressBookCustomFields,
     existingCampaigns,
   });
 });
 
-// Execute batch campaign creation
+// Execute batch campaign creation for a single chunk
 app.post("/api/campaigns/batch", async (c) => {
   let rows: ResolvedCampaignRow[];
-  let unit_id: string;
   try {
     const body = await c.req.json<BatchRequest>();
     rows = body.rows;
-    unit_id = body.unit_id;
   } catch {
     return c.json({ error: "Invalid request body" }, 400);
-  }
-
-  if (!unit_id) {
-    return c.json({ error: "unit_id is required" }, 400);
   }
 
   if (!Array.isArray(rows) || rows.length === 0) {
     return c.json({ error: "No campaign rows provided" }, 400);
   }
 
+  // Pre-fetch CF snapshot once per chunk; the helper mutates it in place as
+  // CFs are created/attached so subsequent rows see the latest state.
+  let existingFields = await listContactListCustomFields(c.env);
+
   const results: CampaignResult[] = [];
 
   for (const row of rows) {
+    const hasCfs = (row.custom_field_defs?.length ?? 0) > 0;
     const result: CampaignResult = {
       campaign_name: row.campaign_name,
       status: "failed",
       steps: {
-        address_book: "pending",
-        custom_field: row.custom_field_ids?.length ? "pending" : "skipped",
         contact_list: "pending",
+        custom_fields: hasCfs ? "pending" : "skipped",
         campaign: "pending",
       },
+      custom_fields: [],
     };
 
-    // Step 1: Address Book
-    let addressBookId: string;
-    try {
-      const ab = await createAddressBook(
-        c.env,
-        `${row.campaign_name} Address Book`,
-        row.campaign_description || "",
-        unit_id
-      );
-      addressBookId = (ab.address_book_id ?? ab.id) as string;
-      result.address_book_id = addressBookId;
-      result.steps.address_book = "success";
-    } catch (err) {
-      result.steps.address_book = "failed";
-      result.steps.custom_field = "skipped";
-      result.steps.contact_list = "skipped";
-      result.steps.campaign = "skipped";
-      result.error = `Address Book: ${(err as Error).message}`;
-      results.push(result);
-      continue;
-    }
-
-    // Step 2: Associate custom fields with address book (if selected)
-    // Non-fatal: a failure here logs a warning but does not abort contact list / campaign creation.
-    if (row.custom_field_ids?.length) {
-      try {
-        // Fetch the custom fields list once per campaign, then reuse for all PATCHes
-        // (avoids N redundant GETs when multiple custom fields are selected)
-        const allFields = await fetchCustomFieldsRaw(c.env);
-        await Promise.all(
-          row.custom_field_ids.map((cfId) =>
-            associateCustomFieldWithAddressBook(c.env, cfId, addressBookId, allFields)
-          )
-        );
-        result.steps.custom_field = "success";
-      } catch (err) {
-        const msg = (err as Error).message;
-        // Zoom returns 400 "Invalid field" for address_book_ids when the 50-address-book
-        // limit per custom field is reached. Surface a clear message instead of raw API noise.
-        const isLimitError = msg.includes("address_book_ids") && msg.includes("Invalid field");
-        result.steps.custom_field = "failed";
-        result.error = isLimitError
-          ? "Custom Field: Zoom limit reached — a custom field cannot be associated with more than 50 address books."
-          : `Custom Field: ${msg}`;
-        // Continue — contact list and campaign creation are not dependent on custom field success.
-      }
-    }
-
-    // Step 3: Contact List
+    // Step 1: Contact List
     let contactListId: string;
     try {
       const cl = await createContactList(
@@ -151,13 +105,45 @@ app.post("/api/campaigns/batch", async (c) => {
       result.steps.contact_list = "success";
     } catch (err) {
       result.steps.contact_list = "failed";
+      result.steps.custom_fields = "skipped";
       result.steps.campaign = "skipped";
       result.error = `Contact List: ${(err as Error).message}`;
       results.push(result);
       continue;
     }
 
-    // Step 4: Campaign
+    // Step 2: Custom fields (attach existing or create fresh, per def).
+    // Non-fatal — campaign creation should still proceed if a CF run fails.
+    if (hasCfs) {
+      try {
+        for (const def of row.custom_field_defs!) {
+          const attached = await attachCustomFieldToContactList(
+            c.env,
+            def,
+            contactListId,
+            existingFields
+          );
+          result.custom_fields!.push(attached);
+        }
+        result.steps.custom_fields = "success";
+      } catch (err) {
+        result.steps.custom_fields = "failed";
+        result.error =
+          err instanceof CFLimitError
+            ? err.message
+            : `Custom Fields: ${(err as Error).message}`;
+        // Refresh snapshot once on failure in case the partial PATCH succeeded
+        // server-side but failed to round-trip; subsequent rows still need a
+        // consistent view.
+        try {
+          existingFields = await listContactListCustomFields(c.env);
+        } catch {
+          // ignore — we'll work off the stale snapshot
+        }
+      }
+    }
+
+    // Step 3: Campaign
     try {
       const payload: Record<string, unknown> = {
         outbound_campaign_name: row.campaign_name,
@@ -174,7 +160,6 @@ app.post("/api/campaigns/batch", async (c) => {
         closure_set_id: "",
       };
 
-      // Dialing method specific settings
       if (row.dialing_method === "preview") {
         payload.dialing_method_settings = {
           preview_timer: 15,
@@ -191,13 +176,11 @@ app.post("/api/campaigns/batch", async (c) => {
         };
       }
 
-      // Business hours — only when explicitly selected
       if (row.business_hour_id) {
         payload.business_hour_source = "campaign";
         payload.business_hour_id = row.business_hour_id;
       }
 
-      // DNC — only include exclusion_logic when a DNC list is present
       if (row.dnc_list_id) {
         payload.campaign_do_not_contact_list_ids = [row.dnc_list_id];
         payload.exclusion_logic = "and";
@@ -226,6 +209,66 @@ app.post("/api/campaigns/batch", async (c) => {
   return c.json(summary);
 });
 
+// List the custom fields attached to a specific contact list (for contact-import mapping)
+app.get("/api/contact-lists/:id/custom-fields", async (c) => {
+  const id = c.req.param("id");
+  try {
+    const fields = await getCustomFieldsForContactList(c.env, id);
+    return c.json({ fields });
+  } catch (err) {
+    return c.json({ error: (err as Error).message }, 500);
+  }
+});
+
+// Import a chunk of contacts into a contact list. Client chunks the upload
+// (~200/request) and aggregates progress; concurrency-8 inside each chunk
+// keeps total wall time per request under the Cloudflare Worker limit.
+app.post("/api/contact-lists/:id/contacts/import", async (c) => {
+  const id = c.req.param("id");
+  let body: ContactImportRequest;
+  try {
+    body = await c.req.json<ContactImportRequest>();
+  } catch {
+    return c.json({ error: "Invalid request body" }, 400);
+  }
+
+  const contacts = body.contacts ?? [];
+  if (!Array.isArray(contacts) || contacts.length === 0) {
+    return c.json({ error: "No contacts provided" }, 400);
+  }
+
+  const concurrency = 8;
+  const results: ContactImportItemResult[] = new Array(contacts.length);
+
+  let nextIndex = 0;
+  async function worker() {
+    while (true) {
+      const i = nextIndex++;
+      if (i >= contacts.length) return;
+      const contact = contacts[i] as ContactPayload;
+      try {
+        await addContactToList(c.env, id, contact);
+        results[i] = {
+          index: i,
+          status: "success",
+          display_name: contact.contact_display_name,
+        };
+      } catch (err) {
+        results[i] = {
+          index: i,
+          status: "failed",
+          display_name: contact.contact_display_name,
+          error: (err as Error).message,
+        };
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+
+  return c.json({ results });
+});
+
 // Fetch all deletable resources for the cleanup view
 app.get("/api/cleanup", async (c) => {
   await getAccessToken(c.env);
@@ -238,34 +281,24 @@ app.get("/api/cleanup", async (c) => {
     }
   }
 
-  const [campaignsResult, contactListsResult, unitsResult] = await Promise.all([
+  const [campaignsResult, contactListsResult] = await Promise.all([
     safeList(() => listCampaigns(c.env)),
     safeList(() => listContactLists(c.env)),
-    safeList(() => listUnits(c.env)),
   ]);
-
-  // Fetch address books for each unit in parallel
-  const addressBookResults = await Promise.all(
-    unitsResult.items.map((u) => safeList(() => listAddressBooks(c.env, u.id)))
-  );
-  const allAddressBooks = addressBookResults.flatMap((r) => r.items);
-  const addressBookError = addressBookResults.find((r) => r.error)?.error ?? unitsResult.error;
 
   return c.json({
     campaigns: campaignsResult.items,
     contactLists: contactListsResult.items,
-    addressBooks: allAddressBooks,
     errors: {
       campaigns: campaignsResult.error,
       contactLists: contactListsResult.error,
-      addressBooks: addressBookError,
     },
   });
 });
 
 // Bulk delete selected resources
 app.post("/api/cleanup/delete", async (c) => {
-  const { campaign_ids = [], contact_list_ids = [], address_book_ids = [] } =
+  const { campaign_ids = [], contact_list_ids = [] } =
     await c.req.json<CleanupDeleteRequest>();
 
   async function deleteAll(
@@ -284,13 +317,12 @@ app.post("/api/cleanup/delete", async (c) => {
     );
   }
 
-  const [campaigns, contactLists, addressBooks] = await Promise.all([
+  const [campaigns, contactLists] = await Promise.all([
     deleteAll(campaign_ids, (id) => deleteCampaign(c.env, id)),
     deleteAll(contact_list_ids, (id) => deleteContactList(c.env, id)),
-    deleteAll(address_book_ids, (id) => deleteAddressBook(c.env, id)),
   ]);
 
-  return c.json({ campaigns, contactLists, addressBooks });
+  return c.json({ campaigns, contactLists });
 });
 
 export default app;

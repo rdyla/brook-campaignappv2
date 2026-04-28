@@ -3,6 +3,7 @@ import UploadView from "./components/UploadView";
 import PreviewTable from "./components/PreviewTable";
 import ResultsView from "./components/ResultsView";
 import CleanupView from "./components/CleanupView";
+import ContactImportView from "./components/ContactImportView";
 import type {
   CampaignRow,
   CampaignResult,
@@ -15,7 +16,7 @@ import type {
 
 const CHUNK_SIZE = 10;
 
-type View = "upload" | "preview" | "processing" | "results" | "cleanup";
+type View = "upload" | "preview" | "processing" | "results" | "contacts" | "cleanup";
 
 export default function App() {
   const [view, setView] = useState<View>("upload");
@@ -73,7 +74,7 @@ export default function App() {
       const r = await fetch("/api/campaigns/batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rows: chunk, unit_id: req.unit_id }),
+        body: JSON.stringify({ rows: chunk }),
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const result = (await r.json()) as BatchResult;
@@ -189,6 +190,14 @@ export default function App() {
               </button>
             )}
             <button
+              onClick={() => setView("contacts")}
+              className={`px-3 py-1.5 rounded ${
+                view === "contacts" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"
+              }`}
+            >
+              Import Contacts
+            </button>
+            <button
               onClick={() => setView("cleanup")}
               className={`px-3 py-1.5 rounded ${
                 view === "cleanup" ? "bg-red-600 text-white" : "text-slate-600 hover:bg-slate-100"
@@ -254,6 +263,8 @@ export default function App() {
             onReset={handleReset}
           />
         )}
+
+        {view === "contacts" && <ContactImportView />}
 
         {view === "cleanup" && <CleanupView />}
 

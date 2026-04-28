@@ -6,10 +6,10 @@ interface Props {
   onReset: () => void;
 }
 
-const stepLabel: Record<string, string> = {
-  address_book: "Address Book",
-  custom_field: "Custom Field",
+const STEPS = ["contact_list", "custom_fields", "campaign"] as const;
+const stepLabel: Record<typeof STEPS[number], string> = {
   contact_list: "Contact List",
+  custom_fields: "Custom Fields",
   campaign: "Campaign",
 };
 
@@ -50,13 +50,36 @@ function CampaignRow({ result }: { result: CampaignResult }) {
 
       <div className="px-4 pb-4 pt-2 border-t border-slate-100 text-xs space-y-3">
         <div className="flex gap-4">
-          {(["address_book", "custom_field", "contact_list", "campaign"] as const).map((step) => (
+          {STEPS.map((step) => (
             <div key={step} className="flex flex-col gap-1">
               <span className="text-slate-500">{stepLabel[step]}</span>
               <StepBadge status={result.steps[step]} />
             </div>
           ))}
         </div>
+
+        {result.custom_fields && result.custom_fields.length > 0 && (
+          <div>
+            <p className="text-slate-500 mb-1">Custom fields attached</p>
+            <div className="flex flex-wrap gap-1.5">
+              {result.custom_fields.map((cf) => (
+                <span
+                  key={cf.custom_field_id}
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] border ${
+                    cf.reused
+                      ? "bg-slate-50 border-slate-200 text-slate-600"
+                      : "bg-emerald-50 border-emerald-200 text-emerald-700"
+                  }`}
+                  title={cf.custom_field_id}
+                >
+                  <span className="font-medium">{cf.custom_field_name}</span>
+                  <span className="text-slate-400">·</span>
+                  <span>{cf.reused ? "reused" : "new"}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
 
         {result.error && (
           <div className="bg-red-50 border border-red-100 rounded px-3 py-2 text-red-700">
@@ -66,12 +89,6 @@ function CampaignRow({ result }: { result: CampaignResult }) {
 
         {result.status === "success" && (
           <div className="grid grid-cols-2 gap-3 font-mono text-slate-600">
-            {result.address_book_id && (
-              <div>
-                <span className="block text-slate-400 font-sans mb-0.5">Address Book ID</span>
-                {result.address_book_id}
-              </div>
-            )}
             {result.contact_list_id && (
               <div>
                 <span className="block text-slate-400 font-sans mb-0.5">Contact List ID</span>

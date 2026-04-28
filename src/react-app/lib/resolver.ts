@@ -94,6 +94,16 @@ export interface ResolvedRow {
   queueSuggestionId?: string;
   /** Candidate names when a contains-match was ambiguous (≥2 hits). */
   queueAmbiguous?: { id: string; name: string }[];
+  /** The 10-digit string used for phone lookup — surfaced on miss. */
+  phoneSearchKey?: string;
+  /** How the phone matched — exact, fuzzy-suggest (off-by-N digits), or none. */
+  phoneMatchType?: "exact" | "fuzzy-suggest" | "none";
+  /** Closest-match phone label when CSV lookup had no exact hit. */
+  phoneSuggestion?: string;
+  /** Catalog ID paired with phoneSuggestion — lets the UI one-click accept. */
+  phoneSuggestionId?: string;
+  /** Edit distance to the suggested phone (1 or 2 digits typo'd). */
+  phoneSuggestionDistance?: number;
   skip: boolean;
   skipReason?: SkipReason;
   hasCsvQueue: boolean;
@@ -110,6 +120,11 @@ export interface RowOverrideInput {
   phone_number_id?: string;
 }
 
+// Maximum digit edits for the phone fuzzy-suggest. Two edits covers single-digit
+// typos and most adjacent transpositions (e.g. 5551234 → 5552134) without being
+// permissive enough to confuse two genuinely different numbers.
+const PHONE_FUZZY_MAX_DISTANCE = 2;
+
 export function resolveRows(
   rows: CampaignRow[],
   catalog: Catalog,
@@ -120,8 +135,11 @@ export function resolveRows(
   for (const q of catalog.queues) queueByKey.set(normalizeKey(q.name), { id: q.id, name: q.name });
   const queueKeys = Array.from(queueByKey.keys());
 
-  const phoneByDigits = new Map<string, string>();
-  for (const p of catalog.phoneNumbers) phoneByDigits.set(last10Digits(p.number), p.id);
+  const phoneByDigits = new Map<string, { id: string; label: string }>();
+  for (const p of catalog.phoneNumbers) {
+    phoneByDigits.set(last10Digits(p.number), { id: p.id, label: p.label });
+  }
+  const phoneDigitsList = Array.from(phoneByDigits.keys());
 
   const existingNameKeys = new Set<string>(
     (catalog.existingCampaigns ?? []).map((c) => normalizeKey(c.name))
@@ -213,19 +231,55 @@ export function resolveRows(
     // Phone resolution
     let phoneId: string | undefined;
     let phoneSource: ResolvedRow["phoneSource"] = "none";
+    let phoneSearchKey: string | undefined;
+    let phoneMatchType: ResolvedRow["phoneMatchType"];
+    let phoneSuggestion: string | undefined;
+    let phoneSuggestionId: string | undefined;
+    let phoneSuggestionDistance: number | undefined;
 
     if (ov.phone_number_id) {
       phoneId = ov.phone_number_id;
       phoneSource = "override";
+      phoneMatchType = "exact";
     } else if (hasCsvPhone) {
-      const hit = phoneByDigits.get(last10Digits(row.primary_did!));
+      const csvDigits = last10Digits(row.primary_did!);
+      phoneSearchKey = csvDigits;
+      const hit = phoneByDigits.get(csvDigits);
       if (hit) {
-        phoneId = hit;
+        phoneId = hit.id;
         phoneSource = "csv";
+        phoneMatchType = "exact";
+      } else if (csvDigits.length === 10) {
+        // Fuzzy suggestion: closest 10-digit number with ≤2 edits. Operations
+        // CSVs sometimes have typo'd numbers; this surfaces the likely intended
+        // line for one-click acceptance, mirroring the queue fuzzy flow.
+        let bestDigits: string | undefined;
+        let bestDist = Infinity;
+        for (const d of phoneDigitsList) {
+          if (d.length !== 10) continue;
+          const dist = levenshtein(csvDigits, d);
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestDigits = d;
+            if (dist === 1) break;
+          }
+        }
+        if (bestDigits && bestDist <= PHONE_FUZZY_MAX_DISTANCE) {
+          const suggestion = phoneByDigits.get(bestDigits);
+          phoneSuggestion = suggestion?.label;
+          phoneSuggestionId = suggestion?.id;
+          phoneSuggestionDistance = bestDist;
+          phoneMatchType = "fuzzy-suggest";
+        } else {
+          phoneMatchType = "none";
+        }
+      } else {
+        phoneMatchType = "none";
       }
     } else if (defaults.phoneId) {
       phoneId = defaults.phoneId;
       phoneSource = "default";
+      phoneMatchType = "exact";
     }
 
     // Skip determination — order matters. Check within-file dupe before existing
@@ -278,6 +332,11 @@ export function resolveRows(
       queueSuggestion,
       queueSuggestionId,
       queueAmbiguous,
+      phoneSearchKey,
+      phoneMatchType,
+      phoneSuggestion,
+      phoneSuggestionId,
+      phoneSuggestionDistance,
       skip,
       skipReason,
       hasCsvQueue,
@@ -288,9 +347,15 @@ export function resolveRows(
 
 export function describeSkipReason(
   reason: SkipReason,
-  opts: { searchKey?: string; suggestion?: string; ambiguous?: { id: string; name: string }[] } = {}
+  opts: {
+    searchKey?: string;
+    suggestion?: string;
+    ambiguous?: { id: string; name: string }[];
+    phoneSearchKey?: string;
+    phoneSuggestion?: string;
+  } = {}
 ): string {
-  const { searchKey, suggestion, ambiguous } = opts;
+  const { searchKey, suggestion, ambiguous, phoneSearchKey, phoneSuggestion } = opts;
   const keyPart = searchKey ? ` (searched "${searchKey}")` : "";
   switch (reason) {
     case "duplicate-in-file":
@@ -306,8 +371,12 @@ export function describeSkipReason(
       const extra = ambiguous && ambiguous.length > 3 ? `, +${ambiguous.length - 3} more` : "";
       return `Queue ambiguous${keyPart} — matches ${sample ?? "multiple"}${extra}`;
     }
-    case "phone-not-found":
-      return "Phone number not found";
+    case "phone-not-found": {
+      const phonePart = phoneSearchKey ? ` (searched "${phoneSearchKey}")` : "";
+      return phoneSuggestion
+        ? `Phone not found${phonePart} — did you mean "${phoneSuggestion}"?`
+        : `Phone not found${phonePart}`;
+    }
     case "queue-and-phone-not-found":
       return suggestion
         ? `Queue + phone not found${keyPart} — queue suggestion: "${suggestion}"`
