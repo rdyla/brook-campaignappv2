@@ -1,24 +1,6 @@
 export type DialingMethod = "preview" | "progressive" | "agentless";
 export type StepStatus = "pending" | "success" | "failed" | "skipped";
 
-export type CFDataType =
-  | "string"
-  | "number"
-  | "boolean"
-  | "email"
-  | "phone"
-  | "percent"
-  | "currency"
-  | "date_time"
-  | "pick_list";
-
-// Custom field definition parsed from a `cf:<name>:<data_type>[:v1|v2|…]` column header
-export interface CustomFieldDef {
-  name: string;
-  data_type: CFDataType;
-  pick_list_values?: string[];
-}
-
 // Fields that come from the CSV — no IDs, only human-knowable values
 export interface CampaignRow {
   campaign_name: string;
@@ -35,8 +17,6 @@ export interface CampaignRow {
   queue_name?: string;
   primary_did?: string;
   campaign_suffix?: string;
-  // Custom field definitions parsed from cf:* CSV column headers
-  custom_field_defs: CustomFieldDef[];
 }
 
 // CampaignRow + IDs resolved via catalog dropdowns — sent to the batch endpoint
@@ -82,29 +62,32 @@ export interface ExistingCampaignOption {
   name: string;
 }
 
+export interface AddressBookOption {
+  id: string;
+  name: string;
+  custom_field_count: number;
+}
+
 export interface Catalog {
   queues: QueueOption[];
   phoneNumbers: PhoneNumberOption[];
   businessHours: BusinessHourOption[];
   contactLists: ContactListOption[];
   existingCampaigns: ExistingCampaignOption[];
+  addressBooks: AddressBookOption[];
 }
 
 export interface BatchRequest {
   rows: ResolvedCampaignRow[];
+  // Address book the contact lists are scoped to; required when present in
+  // the catalog. Customer's automation later moves contacts AB → list.
+  address_book_id?: string;
 }
 
 // Batch results
 export interface CampaignSteps {
   contact_list: StepStatus;
-  custom_fields: StepStatus;
   campaign: StepStatus;
-}
-
-export interface AttachedCustomField {
-  custom_field_id: string;
-  custom_field_name: string;
-  reused: boolean;
 }
 
 export interface CampaignResult {
@@ -112,7 +95,6 @@ export interface CampaignResult {
   status: "success" | "failed";
   contact_list_id?: string;
   campaign_id?: string;
-  custom_fields?: AttachedCustomField[];
   error?: string;
   steps: CampaignSteps;
 }
@@ -163,53 +145,22 @@ export interface BatchRun {
   result: BatchResult;
 }
 
-// ── Contact import ─────────────────────────────────────────────────────────
+// ── Address book creation ──────────────────────────────────────────────────
 
-export type ContactPhoneType = "Main" | "Work" | "Home" | "Mobile" | "Other";
-
-export interface ContactPhone {
-  contact_phone_number: string;
-  contact_phone_type: ContactPhoneType;
+export interface CreateAddressBookRequest {
+  name: string;
+  description?: string;
 }
 
-export interface ContactCustomFieldValue {
+export interface AttachCFToABResult {
   custom_field_id: string;
-  custom_field_value: string;
-}
-
-export interface ContactPayload {
-  contact_display_name: string;
-  contact_first_name?: string;
-  contact_last_name?: string;
-  contact_phones: ContactPhone[];
-  contact_emails?: string[];
-  contact_location?: string;
-  contact_account_number?: string;
-  contact_company?: string;
-  contact_role?: string;
-  contact_timezone?: string;
-  custom_fields?: ContactCustomFieldValue[];
-}
-
-export interface ContactImportRequest {
-  contacts: ContactPayload[];
-}
-
-export interface ContactImportItemResult {
-  index: number;
-  display_name: string;
-  status: "success" | "failed";
+  custom_field_name: string;
+  status: "attached" | "already_attached" | "failed";
   error?: string;
 }
 
-export interface ContactImportResponse {
-  results: ContactImportItemResult[];
-}
-
-// Custom field metadata returned by GET /api/contact-lists/:id/custom-fields
-export interface ContactListCustomField {
+export interface CreateAddressBookResult {
   id: string;
   name: string;
-  data_type: CFDataType;
-  pick_list_values: string[];
+  custom_fields: AttachCFToABResult[];
 }

@@ -1,13 +1,13 @@
 import { Fragment, useMemo, useState } from "react";
 import type {
   CampaignRow,
-  CustomFieldDef,
   ParseError,
   Catalog,
   RowOverride,
   ResolvedCampaignRow,
   BatchRequest,
   BatchResult,
+  CreateAddressBookResult,
 } from "../types";
 import { resolveRows, describeSkipReason, type ResolvedRow } from "../lib/resolver";
 
@@ -33,6 +33,7 @@ interface GlobalSelections {
   phone_number_id: string;
   business_hour_id: string;
   dnc_list_id: string;
+  address_book_id: string;
 }
 
 function Select({
@@ -65,23 +66,6 @@ function Select({
   );
 }
 
-function CustomFieldChip({ def }: { def: CustomFieldDef }) {
-  const detail =
-    def.data_type === "pick_list" && def.pick_list_values?.length
-      ? `pick_list (${def.pick_list_values.join(", ")})`
-      : def.data_type;
-  return (
-    <span
-      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] bg-indigo-50 border border-indigo-200 text-indigo-700"
-      title={detail}
-    >
-      <span className="font-medium">{def.name}</span>
-      <span className="text-indigo-400">·</span>
-      <span className="text-indigo-500">{def.data_type}</span>
-    </span>
-  );
-}
-
 export default function PreviewTable({
   rows,
   errors,
@@ -103,7 +87,10 @@ export default function PreviewTable({
     phone_number_id: "",
     business_hour_id: "",
     dnc_list_id: "",
+    address_book_id: "",
   });
+
+  const [createABModalOpen, setCreateABModalOpen] = useState(false);
 
   const [overrides, setOverrides] = useState<Map<number, RowOverride>>(new Map());
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
@@ -178,7 +165,8 @@ export default function PreviewTable({
     !catalogError &&
     catalog !== null &&
     resolutions !== null &&
-    okCount > 0;
+    okCount > 0 &&
+    Boolean(globals.address_book_id);
 
   function buildResolvedRows(): ResolvedCampaignRow[] {
     if (!resolutions) return [];
@@ -198,8 +186,15 @@ export default function PreviewTable({
     return resolved;
   }
 
+  function buildBatchRequest(rowsToSend: ResolvedCampaignRow[]): BatchRequest {
+    return {
+      rows: rowsToSend,
+      address_book_id: globals.address_book_id || undefined,
+    };
+  }
+
   function handleConfirm() {
-    onConfirm({ rows: buildResolvedRows() });
+    onConfirm(buildBatchRequest(buildResolvedRows()));
   }
 
   const testSampleSize = Math.min(okCount, Math.max(1, Math.ceil(okCount * 0.1)));
@@ -214,7 +209,7 @@ export default function PreviewTable({
       [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
     const sample = shuffled.slice(0, testSampleSize);
-    onTestRun({ rows: sample });
+    onTestRun(buildBatchRequest(sample));
   }
 
   const queueOpts = catalog?.queues.map((q) => ({ id: q.id, label: q.name })) ?? [];
@@ -227,9 +222,6 @@ export default function PreviewTable({
   }
 
   const queueFallbackRequired = !allCsvResolvable;
-
-  // CF defs are header-derived so identical across rows; pull from the first.
-  const cfDefs: CustomFieldDef[] = rows[0]?.custom_field_defs ?? [];
 
   return (
     <div className="space-y-5">
@@ -368,23 +360,6 @@ export default function PreviewTable({
         </div>
       )}
 
-      {/* Custom field summary */}
-      {cfDefs.length > 0 && (
-        <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-3">
-          <p className="text-sm font-semibold text-indigo-800 mb-1.5">
-            Custom fields detected — {cfDefs.length} field{cfDefs.length !== 1 ? "s" : ""} will be attached to each new contact list
-          </p>
-          <div className="flex flex-wrap gap-1.5">
-            {cfDefs.map((d) => (
-              <CustomFieldChip key={d.name} def={d} />
-            ))}
-          </div>
-          <p className="text-xs text-indigo-600 mt-2">
-            Existing fields with the same name are reused (Zoom limit: 50 contact lists per field).
-          </p>
-        </div>
-      )}
-
       {/* Global settings panel */}
       <div className="bg-white border border-slate-200 rounded-xl p-5">
         <div className="flex items-center gap-2 mb-4">
@@ -414,6 +389,40 @@ export default function PreviewTable({
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-4">
+            <div className="col-span-2">
+              <label className="block text-xs font-medium text-slate-600 mb-1.5">
+                Address book <span className="text-red-500">*</span>
+              </label>
+              <div className="flex gap-2">
+                <select
+                  value={globals.address_book_id}
+                  onChange={(e) => {
+                    if (e.target.value === "__create__") {
+                      setCreateABModalOpen(true);
+                      return;
+                    }
+                    setGlobal("address_book_id", e.target.value);
+                  }}
+                  disabled={catalogLoading}
+                  className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">
+                    {catalog && catalog.addressBooks.length === 0
+                      ? "No address books found — create one"
+                      : "Select an address book…"}
+                  </option>
+                  {catalog?.addressBooks.map((ab) => (
+                    <option key={ab.id} value={ab.id}>
+                      {ab.name} ({ab.custom_field_count} custom field{ab.custom_field_count === 1 ? "" : "s"})
+                    </option>
+                  ))}
+                  <option value="__create__">+ Create new address book…</option>
+                </select>
+              </div>
+              <p className="text-xs text-slate-500 mt-1">
+                Contact lists will be scoped to this address book. Creating a new one auto-attaches every existing custom field.
+              </p>
+            </div>
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1.5">
                 Queue{" "}
@@ -727,6 +736,157 @@ export default function PreviewTable({
           </table>
         </div>
       )}
+
+      {createABModalOpen && (
+        <CreateAddressBookModal
+          onClose={() => setCreateABModalOpen(false)}
+          onCreated={(result) => {
+            setGlobal("address_book_id", result.id);
+            setCreateABModalOpen(false);
+            // Refresh catalog so the new AB shows up in the dropdown with its CF count.
+            onCatalogRetry();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function CreateAddressBookModal({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void;
+  onCreated: (result: CreateAddressBookResult) => void;
+}) {
+  const [name, setName] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [partial, setPartial] = useState<CreateAddressBookResult | null>(null);
+
+  async function handleCreate() {
+    if (!name.trim()) {
+      setError("Name is required");
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      const r = await fetch("/api/address-books", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim() }),
+      });
+      const data = (await r.json()) as CreateAddressBookResult & { error?: string };
+      if (!r.ok) {
+        setError(data.error || `HTTP ${r.status}`);
+        return;
+      }
+      const failures = data.custom_fields.filter((f) => f.status === "failed");
+      if (failures.length > 0) {
+        // Address book exists; surface the CF attach failures so user can decide.
+        setPartial(data);
+        return;
+      }
+      onCreated(data);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 bg-slate-900/50 z-50 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-xl shadow-xl max-w-md w-full p-5 space-y-4"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div>
+          <h3 className="text-lg font-semibold text-slate-800">Create address book</h3>
+          <p className="text-sm text-slate-500 mt-0.5">
+            All existing custom fields will be auto-attached.
+          </p>
+        </div>
+
+        {partial ? (
+          <div className="space-y-3">
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
+              <p className="font-medium">
+                Address book "{partial.name}" was created, but {partial.custom_fields.filter((f) => f.status === "failed").length} custom
+                field{partial.custom_fields.filter((f) => f.status === "failed").length === 1 ? "" : "s"} failed to attach.
+              </p>
+              <ul className="mt-2 space-y-0.5 text-xs">
+                {partial.custom_fields
+                  .filter((f) => f.status === "failed")
+                  .map((f) => (
+                    <li key={f.custom_field_id}>
+                      <span className="font-mono">{f.custom_field_name}</span>: {f.error}
+                    </li>
+                  ))}
+              </ul>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={onClose}
+                className="px-3 py-2 text-sm rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50"
+              >
+                Don't use it
+              </button>
+              <button
+                onClick={() => onCreated(partial)}
+                className="px-3 py-2 text-sm rounded-lg bg-blue-600 text-white font-medium hover:bg-blue-700"
+              >
+                Use it anyway
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1.5">Name</label>
+              <input
+                autoFocus
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleCreate();
+                  if (e.key === "Escape") onClose();
+                }}
+                disabled={submitting}
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="e.g. UMMHC Patients"
+              />
+            </div>
+
+            {error && (
+              <div className="bg-red-50 border border-red-200 rounded px-3 py-2 text-sm text-red-700">
+                {error}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={onClose}
+                disabled={submitting}
+                className="px-3 py-2 text-sm rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreate}
+                disabled={submitting || !name.trim()}
+                className="px-3 py-2 text-sm rounded-lg bg-blue-600 text-white font-medium hover:bg-blue-700 disabled:opacity-50"
+              >
+                {submitting ? "Creating…" : "Create"}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }

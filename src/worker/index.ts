@@ -2,11 +2,6 @@ import { Hono } from "hono";
 import {
   createContactList,
   createCampaign,
-  attachCustomFieldToContactList,
-  listContactListCustomFields,
-  getCustomFieldsForContactList,
-  addContactToList,
-  CFLimitError,
   listQueues,
   listPhoneNumbers,
   listBusinessHours,
@@ -14,7 +9,11 @@ import {
   listCampaigns,
   deleteCampaign,
   deleteContactList,
-  type ContactPayload,
+  listAddressBooks,
+  createAddressBook,
+  attachAllCustomFieldsToAddressBook,
+  getCustomFieldsForAddressBook,
+  listAddressBookCustomFields,
 } from "./zoom-client";
 import { getAccessToken } from "./zoom-auth";
 import type {
@@ -23,8 +22,8 @@ import type {
   BatchResult,
   BatchRequest,
   CleanupDeleteRequest,
-  ContactImportRequest,
-  ContactImportItemResult,
+  CreateAddressBookRequest,
+  CreateAddressBookResult,
 } from "../react-app/types";
 
 interface AppEnv extends Env {
@@ -40,7 +39,7 @@ app.get("/api/catalog", async (c) => {
   // Pre-warm token so parallel calls share it
   await getAccessToken(c.env);
 
-  const [queues, phoneNumbers, businessHours, contactLists, existingCampaigns] =
+  const [queues, phoneNumbers, businessHours, contactLists, existingCampaigns, addressBooks] =
     await Promise.all([
       listQueues(c.env),
       listPhoneNumbers(c.env),
@@ -48,6 +47,7 @@ app.get("/api/catalog", async (c) => {
       listContactLists(c.env),
       // null status → all campaigns (active + inactive) for dedup checks on import
       listCampaigns(c.env, null).catch(() => [] as { id: string; name: string }[]),
+      listAddressBooks(c.env).catch(() => [] as Awaited<ReturnType<typeof listAddressBooks>>),
     ]);
 
   return c.json({
@@ -56,15 +56,18 @@ app.get("/api/catalog", async (c) => {
     businessHours,
     contactLists,
     existingCampaigns,
+    addressBooks,
   });
 });
 
 // Execute batch campaign creation for a single chunk
 app.post("/api/campaigns/batch", async (c) => {
   let rows: ResolvedCampaignRow[];
+  let addressBookId: string | undefined;
   try {
     const body = await c.req.json<BatchRequest>();
     rows = body.rows;
+    addressBookId = body.address_book_id;
   } catch {
     return c.json({ error: "Invalid request body" }, 400);
   }
@@ -73,77 +76,39 @@ app.post("/api/campaigns/batch", async (c) => {
     return c.json({ error: "No campaign rows provided" }, 400);
   }
 
-  // Pre-fetch CF snapshot once per chunk; the helper mutates it in place as
-  // CFs are created/attached so subsequent rows see the latest state.
-  let existingFields = await listContactListCustomFields(c.env);
-
   const results: CampaignResult[] = [];
 
   for (const row of rows) {
-    const hasCfs = (row.custom_field_defs?.length ?? 0) > 0;
     const result: CampaignResult = {
       campaign_name: row.campaign_name,
       status: "failed",
       steps: {
         contact_list: "pending",
-        custom_fields: hasCfs ? "pending" : "skipped",
         campaign: "pending",
       },
-      custom_fields: [],
     };
 
-    // Step 1: Contact List
+    // Step 1: Contact List (scoped to the chosen address book)
     let contactListId: string;
     try {
       const cl = await createContactList(
         c.env,
         `${row.campaign_name} Contact List`,
-        row.campaign_description || ""
+        row.campaign_description || "",
+        addressBookId
       );
       contactListId = (cl.contact_list_id ?? cl.id) as string;
       result.contact_list_id = contactListId;
       result.steps.contact_list = "success";
     } catch (err) {
       result.steps.contact_list = "failed";
-      result.steps.custom_fields = "skipped";
       result.steps.campaign = "skipped";
       result.error = `Contact List: ${(err as Error).message}`;
       results.push(result);
       continue;
     }
 
-    // Step 2: Custom fields (attach existing or create fresh, per def).
-    // Non-fatal — campaign creation should still proceed if a CF run fails.
-    if (hasCfs) {
-      try {
-        for (const def of row.custom_field_defs!) {
-          const attached = await attachCustomFieldToContactList(
-            c.env,
-            def,
-            contactListId,
-            existingFields
-          );
-          result.custom_fields!.push(attached);
-        }
-        result.steps.custom_fields = "success";
-      } catch (err) {
-        result.steps.custom_fields = "failed";
-        result.error =
-          err instanceof CFLimitError
-            ? err.message
-            : `Custom Fields: ${(err as Error).message}`;
-        // Refresh snapshot once on failure in case the partial PATCH succeeded
-        // server-side but failed to round-trip; subsequent rows still need a
-        // consistent view.
-        try {
-          existingFields = await listContactListCustomFields(c.env);
-        } catch {
-          // ignore — we'll work off the stale snapshot
-        }
-      }
-    }
-
-    // Step 3: Campaign
+    // Step 2: Campaign
     try {
       const payload: Record<string, unknown> = {
         outbound_campaign_name: row.campaign_name,
@@ -209,64 +174,105 @@ app.post("/api/campaigns/batch", async (c) => {
   return c.json(summary);
 });
 
-// List the custom fields attached to a specific contact list (for contact-import mapping)
-app.get("/api/contact-lists/:id/custom-fields", async (c) => {
+// Create a new address book and attach every existing org-level custom field
+// to it. Returns the new id along with per-CF attach status so the UI can
+// surface partial failures.
+app.post("/api/address-books", async (c) => {
+  let body: CreateAddressBookRequest;
+  try {
+    body = await c.req.json<CreateAddressBookRequest>();
+  } catch {
+    return c.json({ error: "Invalid request body" }, 400);
+  }
+  const name = body.name?.trim();
+  if (!name) {
+    return c.json({ error: "Address book name is required" }, 400);
+  }
+
+  let id: string;
+  try {
+    ({ id } = await createAddressBook(c.env, name, body.description ?? ""));
+  } catch (err) {
+    return c.json({ error: `Create failed: ${(err as Error).message}` }, 500);
+  }
+
+  const attachResults = await attachAllCustomFieldsToAddressBook(c.env, id);
+  const result: CreateAddressBookResult = {
+    id,
+    name,
+    custom_fields: attachResults,
+  };
+  return c.json(result);
+});
+
+// List CFs attached to a given address book — used by the UI to show "(N
+// custom fields attached)" alongside the picker.
+app.get("/api/address-books/:id/custom-fields", async (c) => {
   const id = c.req.param("id");
   try {
-    const fields = await getCustomFieldsForContactList(c.env, id);
+    const fields = await getCustomFieldsForAddressBook(c.env, id);
     return c.json({ fields });
   } catch (err) {
     return c.json({ error: (err as Error).message }, 500);
   }
 });
 
-// Import a chunk of contacts into a contact list. Client chunks the upload
-// (~200/request) and aggregates progress; concurrency-8 inside each chunk
-// keeps total wall time per request under the Cloudflare Worker limit.
-app.post("/api/contact-lists/:id/contacts/import", async (c) => {
-  const id = c.req.param("id");
-  let body: ContactImportRequest;
-  try {
-    body = await c.req.json<ContactImportRequest>();
-  } catch {
-    return c.json({ error: "Invalid request body" }, 400);
-  }
-
-  const contacts = body.contacts ?? [];
-  if (!Array.isArray(contacts) || contacts.length === 0) {
-    return c.json({ error: "No contacts provided" }, 400);
-  }
-
-  const concurrency = 8;
-  const results: ContactImportItemResult[] = new Array(contacts.length);
-
-  let nextIndex = 0;
-  async function worker() {
-    while (true) {
-      const i = nextIndex++;
-      if (i >= contacts.length) return;
-      const contact = contacts[i] as ContactPayload;
-      try {
-        await addContactToList(c.env, id, contact);
-        results[i] = {
-          index: i,
-          status: "success",
-          display_name: contact.contact_display_name,
-        };
-      } catch (err) {
-        results[i] = {
-          index: i,
-          status: "failed",
-          display_name: contact.contact_display_name,
-          error: (err as Error).message,
-        };
-      }
+// Diagnostic — probes address-book endpoints directly so we can see Zoom's
+// raw responses without the helper layer wrapping them. The exact paths for
+// address-book CFs are best-guess; this route makes it easy to confirm and
+// adjust.
+app.get("/api/diagnostic/address-books", async (c) => {
+  const token = await getAccessToken(c.env);
+  const probes = [
+    "https://api.zoom.us/v2/contact_center/address_books?page_size=10",
+    "https://api.zoom.us/v2/contact_center/address_books/custom_fields?page_size=10",
+  ];
+  const out: Array<{
+    url: string;
+    status: number;
+    statusText: string;
+    bodyText: string;
+    bodyParsed: unknown;
+  }> = [];
+  for (const url of probes) {
+    try {
+      const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      const bodyText = await r.text();
+      out.push({
+        url,
+        status: r.status,
+        statusText: r.statusText,
+        bodyText,
+        bodyParsed: (() => {
+          try {
+            return JSON.parse(bodyText);
+          } catch {
+            return null;
+          }
+        })(),
+      });
+    } catch (err) {
+      out.push({
+        url,
+        status: 0,
+        statusText: "fetch_threw",
+        bodyText: (err as Error).message,
+        bodyParsed: null,
+      });
     }
   }
+  return c.json({ probes: out });
+});
 
-  await Promise.all(Array.from({ length: concurrency }, () => worker()));
-
-  return c.json({ results });
+// Inventory of every org-level CF (used by the diagnostic and as raw data for
+// debugging which ABs each CF is attached to).
+app.get("/api/diagnostic/address-book-fields", async (c) => {
+  try {
+    const fields = await listAddressBookCustomFields(c.env);
+    return c.json({ count: fields.length, fields });
+  } catch (err) {
+    return c.json({ error: (err as Error).message }, 500);
+  }
 });
 
 // Fetch all deletable resources for the cleanup view

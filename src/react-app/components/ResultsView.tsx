@@ -6,10 +6,9 @@ interface Props {
   onReset: () => void;
 }
 
-const STEPS = ["contact_list", "custom_fields", "campaign"] as const;
+const STEPS = ["contact_list", "campaign"] as const;
 const stepLabel: Record<typeof STEPS[number], string> = {
   contact_list: "Contact List",
-  custom_fields: "Custom Fields",
   campaign: "Campaign",
 };
 
@@ -57,29 +56,6 @@ function CampaignRow({ result }: { result: CampaignResult }) {
             </div>
           ))}
         </div>
-
-        {result.custom_fields && result.custom_fields.length > 0 && (
-          <div>
-            <p className="text-slate-500 mb-1">Custom fields attached</p>
-            <div className="flex flex-wrap gap-1.5">
-              {result.custom_fields.map((cf) => (
-                <span
-                  key={cf.custom_field_id}
-                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] border ${
-                    cf.reused
-                      ? "bg-slate-50 border-slate-200 text-slate-600"
-                      : "bg-emerald-50 border-emerald-200 text-emerald-700"
-                  }`}
-                  title={cf.custom_field_id}
-                >
-                  <span className="font-medium">{cf.custom_field_name}</span>
-                  <span className="text-slate-400">·</span>
-                  <span>{cf.reused ? "reused" : "new"}</span>
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
 
         {result.error && (
           <div className="bg-red-50 border border-red-100 rounded px-3 py-2 text-red-700">

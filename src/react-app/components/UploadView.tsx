@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import Papa from "papaparse";
-import type { CampaignRow, CustomFieldDef, CFDataType, ParseError } from "../types";
+import type { CampaignRow, ParseError } from "../types";
 import { cleanMojibake, normalizeKey } from "../lib/resolver";
 
 interface Props {
@@ -8,17 +8,6 @@ interface Props {
 }
 
 const VALID_DIALING: CampaignRow["dialing_method"][] = ["preview", "progressive", "agentless"];
-const VALID_CF_DATA_TYPES: CFDataType[] = [
-  "string",
-  "number",
-  "boolean",
-  "email",
-  "phone",
-  "percent",
-  "currency",
-  "date_time",
-  "pick_list",
-];
 
 // Normalize CSV header names to canonical snake_case keys so a file can use
 // "Queue / Clinic", "Primary DID", "Campaign Name", etc. and still parse.
@@ -54,65 +43,8 @@ const HEADER_ALIASES: Record<string, string> = {
 
 function normalizeHeader(h: string): string {
   const trimmed = h.trim();
-  // Preserve cf:* columns verbatim — they encode field name + type + optional
-  // pick-list values, all of which the parser inspects after Papa-parse.
-  if (/^cf:/i.test(trimmed)) return trimmed;
   const lower = trimmed.toLowerCase().replace(/\s+/g, " ");
   return HEADER_ALIASES[lower] ?? lower.replace(/\s+/g, "_");
-}
-
-interface ParsedCfHeaders {
-  defs: CustomFieldDef[];
-  errors: string[];
-}
-
-// Parse `cf:<name>:<data_type>[:v1|v2|…]` headers from the CSV column list.
-// The cell values for these columns are ignored at campaign-create time —
-// they're populated when contacts are imported into the resulting list.
-function parseCustomFieldHeaders(headers: string[]): ParsedCfHeaders {
-  const defs: CustomFieldDef[] = [];
-  const errors: string[] = [];
-  const seen = new Set<string>();
-
-  for (const raw of headers) {
-    if (!/^cf:/i.test(raw)) continue;
-    const parts = raw.slice(3).split(":");
-    if (parts.length < 2) {
-      errors.push(`Header "${raw}" must be of form "cf:<name>:<data_type>"`);
-      continue;
-    }
-    const name = parts[0].trim();
-    const dataType = parts[1].trim().toLowerCase() as CFDataType;
-    if (!name) {
-      errors.push(`Header "${raw}" has empty custom-field name`);
-      continue;
-    }
-    if (!VALID_CF_DATA_TYPES.includes(dataType)) {
-      errors.push(
-        `Header "${raw}" has invalid data type "${parts[1]}" — must be one of ${VALID_CF_DATA_TYPES.join(", ")}`
-      );
-      continue;
-    }
-    if (seen.has(name)) {
-      errors.push(`Duplicate custom-field column "${name}"`);
-      continue;
-    }
-    seen.add(name);
-
-    const def: CustomFieldDef = { name, data_type: dataType };
-    if (dataType === "pick_list") {
-      const values = parts.slice(2).join(":").split("|").map((v) => v.trim()).filter(Boolean);
-      if (values.length === 0) {
-        errors.push(
-          `Header "${raw}" — pick_list requires "|"-separated values, e.g. cf:Status:pick_list:active|inactive`
-        );
-        continue;
-      }
-      def.pick_list_values = values;
-    }
-    defs.push(def);
-  }
-  return { defs, errors };
 }
 
 function isNewFormatRow(r: Record<string, string>): boolean {
@@ -124,19 +56,13 @@ function isNewFormatRow(r: Record<string, string>): boolean {
   );
 }
 
-function parseRows(
-  raw: Record<string, string>[],
-  headers: string[]
-): {
+function parseRows(raw: Record<string, string>[]): {
   rows: CampaignRow[];
   errors: ParseError[];
 } {
   const rows: CampaignRow[] = [];
   const errors: ParseError[] = [];
   const newFormat = raw.length > 0 && isNewFormatRow(raw[0]);
-
-  const { defs: customFieldDefs, errors: cfErrors } = parseCustomFieldHeaders(headers);
-  for (const msg of cfErrors) errors.push({ row: 0, message: msg });
 
   for (let i = 0; i < raw.length; i++) {
     const r = raw[i];
@@ -197,7 +123,6 @@ function parseRows(
         queue_name: queueClean,
         primary_did: primaryDid,
         campaign_suffix: suffixClean,
-        custom_field_defs: customFieldDefs,
       });
       continue;
     }
@@ -230,7 +155,6 @@ function parseRows(
       dial_sequence: r.dial_sequence?.trim() || "list_dial",
       max_ring_time: r.max_ring_time ? Number(r.max_ring_time) : 60,
       retry_period: r.retry_period ? Number(r.retry_period) : 60,
-      custom_field_defs: customFieldDefs,
     });
   }
 
@@ -258,8 +182,7 @@ export default function UploadView({ onParsed }: Props) {
           setParseErr(`CSV parse error: ${result.errors[0].message}`);
           return;
         }
-        const headers = result.meta.fields ?? [];
-        const { rows, errors } = parseRows(result.data, headers);
+        const { rows, errors } = parseRows(result.data);
         onParsed(rows, errors, file.name);
       },
     });
@@ -367,15 +290,12 @@ export default function UploadView({ onParsed }: Props) {
         </p>
 
         <div className="border-t border-slate-200 pt-3">
-          <p className="font-semibold mb-2 text-slate-700">Custom field columns (optional)</p>
-          <p className="text-slate-500 mb-2">
-            Add columns named <span className="font-mono text-slate-700">cf:&lt;name&gt;:&lt;type&gt;</span> — e.g.
-            <span className="font-mono text-slate-700"> cf:UMMHC Patient ID:string</span>. Cell values are ignored here; values come in with the contact import CSV.
+          <p className="font-semibold mb-2 text-slate-700">Custom fields</p>
+          <p className="text-slate-500">
+            Custom fields are managed in Zoom's UI and live on address books — not on the CSV.
+            On the next screen you'll pick (or create) an address book; if you create one, all
+            existing custom fields are auto-attached.
           </p>
-          <ul className="ml-4 list-disc space-y-0.5 text-slate-500">
-            <li>Types: string, number, boolean, email, phone, percent, currency, date_time, pick_list</li>
-            <li>Picklists: <span className="font-mono">cf:Status:pick_list:active|inactive|pending</span></li>
-          </ul>
         </div>
       </div>
     </div>
