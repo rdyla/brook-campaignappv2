@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import {
   createContactList,
   createCampaign,
+  patchCampaign,
   listQueues,
   listPhoneNumbers,
   listBusinessHours,
@@ -25,6 +26,9 @@ import type {
   CleanupDeleteRequest,
   CreateAddressBookRequest,
   CreateAddressBookResult,
+  PatchCampaignsRequest,
+  PatchCampaignsResponse,
+  PatchCampaignResult,
 } from "../react-app/types";
 
 interface AppEnv extends Env {
@@ -135,6 +139,8 @@ app.post("/api/campaigns/batch", async (c) => {
         max_ring_time: row.max_ring_time,
         enable_closure_hour: false,
         closure_set_id: "",
+        // Customer's policy: campaigns should run continuously by default.
+        enable_always_running: true,
       };
 
       if (row.dialing_method === "preview") {
@@ -184,6 +190,52 @@ app.post("/api/campaigns/batch", async (c) => {
   };
 
   return c.json(summary);
+});
+
+// Bulk-patch a set of campaigns with the same partial update. Sent as one
+// request per chunk; the client splits the full set into chunks so each
+// request stays under Worker wall-time limits. Fan-out concurrency keeps
+// each chunk responsive.
+app.post("/api/campaigns/patch", async (c) => {
+  let body: PatchCampaignsRequest;
+  try {
+    body = await c.req.json<PatchCampaignsRequest>();
+  } catch {
+    return c.json({ error: "Invalid request body" }, 400);
+  }
+  const ids = body.campaign_ids ?? [];
+  const patch = body.patch ?? {};
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return c.json({ error: "No campaign_ids provided" }, 400);
+  }
+  if (Object.keys(patch).length === 0) {
+    return c.json({ error: "Empty patch — nothing to update" }, 400);
+  }
+
+  const concurrency = 8;
+  const results: PatchCampaignResult[] = new Array(ids.length);
+  let nextIndex = 0;
+  async function worker() {
+    while (true) {
+      const i = nextIndex++;
+      if (i >= ids.length) return;
+      const id = ids[i];
+      try {
+        await patchCampaign(c.env, id, patch);
+        results[i] = { campaign_id: id, status: "success" };
+      } catch (err) {
+        results[i] = {
+          campaign_id: id,
+          status: "failed",
+          error: (err as Error).message,
+        };
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+
+  const response: PatchCampaignsResponse = { results };
+  return c.json(response);
 });
 
 // Create a new address book and attach every existing org-level custom field

@@ -3,6 +3,7 @@ import UploadView from "./components/UploadView";
 import PreviewTable from "./components/PreviewTable";
 import ResultsView from "./components/ResultsView";
 import CleanupView from "./components/CleanupView";
+import PatchView from "./components/PatchView";
 import type {
   CampaignRow,
   CampaignResult,
@@ -15,7 +16,7 @@ import type {
 
 const CHUNK_SIZE = 10;
 
-type View = "upload" | "preview" | "processing" | "results" | "cleanup";
+type View = "upload" | "preview" | "processing" | "results" | "patch" | "cleanup";
 
 export default function App() {
   const [view, setView] = useState<View>("upload");
@@ -189,6 +190,14 @@ export default function App() {
               </button>
             )}
             <button
+              onClick={() => setView("patch")}
+              className={`px-3 py-1.5 rounded ${
+                view === "patch" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"
+              }`}
+            >
+              Patch
+            </button>
+            <button
               onClick={() => setView("cleanup")}
               className={`px-3 py-1.5 rounded ${
                 view === "cleanup" ? "bg-red-600 text-white" : "text-slate-600 hover:bg-slate-100"
@@ -254,6 +263,8 @@ export default function App() {
             onReset={handleReset}
           />
         )}
+
+        {view === "patch" && <PatchView />}
 
         {view === "cleanup" && <CleanupView />}
 

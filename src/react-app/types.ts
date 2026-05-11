@@ -155,6 +155,25 @@ export interface BatchRun {
   result: BatchResult;
 }
 
+// ── Bulk campaign patch ────────────────────────────────────────────────────
+
+export interface PatchCampaignsRequest {
+  campaign_ids: string[];
+  // Whatever fields the user toggled on in the form. Sent verbatim to Zoom's
+  // PATCH /outbound_campaign/campaigns/{id}; only included keys are updated.
+  patch: Record<string, unknown>;
+}
+
+export interface PatchCampaignResult {
+  campaign_id: string;
+  status: "success" | "failed";
+  error?: string;
+}
+
+export interface PatchCampaignsResponse {
+  results: PatchCampaignResult[];
+}
+
 // ── Address book creation ──────────────────────────────────────────────────
 
 export interface CreateAddressBookRequest {

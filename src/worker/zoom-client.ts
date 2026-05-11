@@ -389,6 +389,14 @@ export async function createCampaign(
   return zoomPost(env, "/outbound_campaign/campaigns", payload);
 }
 
+export async function patchCampaign(
+  env: ZoomEnv,
+  id: string,
+  patch: Record<string, unknown>
+): Promise<void> {
+  await zoomPatch(env, `/outbound_campaign/campaigns/${id}`, patch);
+}
+
 // ── Cleanup list + delete ──────────────────────────────────────────────────
 
 export async function listCampaigns(env: ZoomEnv, status: string | null = "active") {
