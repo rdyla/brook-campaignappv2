@@ -3,6 +3,7 @@ import {
   createContactList,
   createCampaign,
   patchCampaign,
+  getCampaign,
   listQueues,
   listPhoneNumbers,
   listBusinessHours,
@@ -280,6 +281,19 @@ app.get("/api/address-books/:id/custom-fields", async (c) => {
   try {
     const fields = await getCustomFieldsForAddressBook(c.env, id);
     return c.json({ fields });
+  } catch (err) {
+    return c.json({ error: (err as Error).message }, 500);
+  }
+});
+
+// Diagnostic — fetch one campaign's full current config so we can see what
+// fields Zoom has on it. Useful when a PATCH returns "Campaign configuration
+// invalid" without saying which field is the offender.
+app.get("/api/diagnostic/campaign/:id", async (c) => {
+  const id = c.req.param("id");
+  try {
+    const data = await getCampaign(c.env, id);
+    return c.json(data);
   } catch (err) {
     return c.json({ error: (err as Error).message }, 500);
   }
