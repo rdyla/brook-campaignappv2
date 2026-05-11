@@ -140,8 +140,11 @@ app.post("/api/campaigns/batch", async (c) => {
         max_ring_time: row.max_ring_time,
         enable_closure_hour: false,
         closure_set_id: "",
-        // Customer's policy: campaigns should run continuously by default.
+        // Customer's policy: campaigns should run continuously (FIFO) by
+        // default. Zoom requires contact_order alongside enable_always_running
+        // — sending only the bool returns 100908 "configuration invalid".
         enable_always_running: true,
+        contact_order: 1,
       };
 
       if (row.dialing_method === "preview") {

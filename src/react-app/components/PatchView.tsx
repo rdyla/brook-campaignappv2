@@ -31,12 +31,29 @@ const DIAL_SEQUENCES = ["list_dial", "round_robin"];
 
 const FIELD_DEFS: FieldDef[] = [
   {
-    key: "enable_always_running",
-    label: "Always running",
-    kind: "boolean",
-    hint: "Campaign keeps cycling rather than stopping at end-of-list.",
-    defaultValue: "true",
-    build: (v) => ({ enable_always_running: v === "true" }),
+    // Zoom requires both enable_always_running and contact_order to ride
+    // together — sending only the bool returns 100908 "configuration invalid".
+    // We collapse the two into a single 3-state field so picking "Always
+    // running" forces the FIFO/LIFO choice instead of letting it be omitted.
+    // contact_order values: 1 = FIFO, 2 = LIFO (educated guess; preview pane
+    // lets you verify before submitting).
+    key: "always_running_mode",
+    label: "Always running mode",
+    kind: "select",
+    hint: "FIFO = first in, first out · LIFO = last in, first out.",
+    defaultValue: "fifo",
+    options: [
+      { value: "off", label: "Off" },
+      { value: "fifo", label: "Always running — FIFO" },
+      { value: "lifo", label: "Always running — LIFO" },
+    ],
+    build: (v) => {
+      if (v === "off") return { enable_always_running: false };
+      return {
+        enable_always_running: true,
+        contact_order: v === "lifo" ? 2 : 1,
+      };
+    },
   },
   {
     key: "outbound_campaign_priority",
