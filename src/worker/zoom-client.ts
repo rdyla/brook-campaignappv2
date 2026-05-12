@@ -411,6 +411,11 @@ const READ_ONLY_CAMPAIGN_KEYS = new Set([
   "queue_name",
   "outbound_campaign_status",
   "campaign_contact_list",
+  // Priority appears to be in a limited slot pool (~5 slots). Re-sending
+  // the campaign's current priority on PATCH can trigger a uniqueness/slot
+  // collision against itself or sibling campaigns. Strip from the merge
+  // body; an explicit patch wins via merge.
+  "outbound_campaign_priority",
 ]);
 
 // Patch the campaign by mirroring what Zoom's UI does: GET the current
