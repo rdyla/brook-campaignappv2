@@ -447,6 +447,18 @@ export async function patchCampaign(
     delete writable.business_hour_source;
   }
 
+  // Zoom's PATCH validator rejects bodies missing fields it considers
+  // required even when the caller didn't intend to change them. Campaigns
+  // created via API often have these unset because the create payload
+  // omits them; we backfill conservative defaults so the merged body
+  // validates. Caller's explicit patch always wins via the spread below.
+  if (writable.contact_order == null) {
+    writable.contact_order = 1;
+  }
+  if (writable.contact_phone_order == null) {
+    writable.contact_phone_order = "1,2,3,4,5";
+  }
+
   const merged = { ...writable, ...patch };
   await zoomPatch(env, `/outbound_campaign/campaigns/${id}`, merged);
 }
