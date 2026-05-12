@@ -163,9 +163,16 @@ app.post("/api/campaigns/batch", async (c) => {
         };
       }
 
+      // Default to inheriting business hours from the queue. Omitting these
+      // fields entirely caused Zoom to store the campaign with
+      // business_hour_source: "campaign" + business_hour_id: "1" (sentinel),
+      // which then fails validation on every PATCH (error 5011). Setting
+      // source explicitly to "queue" avoids that broken state.
       if (row.business_hour_id) {
         payload.business_hour_source = "campaign";
         payload.business_hour_id = row.business_hour_id;
+      } else {
+        payload.business_hour_source = "queue";
       }
 
       if (row.dnc_list_id) {

@@ -109,10 +109,16 @@ const FIELD_DEFS: FieldDef[] = [
     key: "business_hour_id",
     label: "Business hours",
     kind: "select",
-    hint: "Sets business_hour_source='campaign' alongside.",
+    hint: "Empty = inherit from queue; otherwise sets source='campaign'.",
     defaultValue: "",
     options: [],
-    build: (v) => ({ business_hour_source: "campaign", business_hour_id: v }),
+    build: (v) =>
+      v
+        ? { business_hour_source: "campaign", business_hour_id: v }
+        : // Picking "none" means inherit from the queue, not "campaign + empty"
+          // — the latter is the same broken state ("1" sentinel) we're trying
+          // to fix.
+          { business_hour_source: "queue" },
   },
   {
     key: "dnc_list_id",
