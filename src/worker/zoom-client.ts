@@ -389,19 +389,49 @@ export async function createCampaign(
   return zoomPost(env, "/outbound_campaign/campaigns", payload);
 }
 
-export async function patchCampaign(
-  env: ZoomEnv,
-  id: string,
-  patch: Record<string, unknown>
-): Promise<void> {
-  await zoomPatch(env, `/outbound_campaign/campaigns/${id}`, patch);
-}
-
 export async function getCampaign(
   env: ZoomEnv,
   id: string
 ): Promise<Record<string, unknown>> {
   return zoomGet(env, `${CC_BASE}/outbound_campaign/campaigns/${id}`);
+}
+
+// Read-only / derived fields that the GET endpoint returns but the PATCH
+// endpoint rejects. Includes the response-side aggregate `campaign_contact_list`
+// which we translate to its writable counterpart `campaign_contact_list_ids`.
+const READ_ONLY_CAMPAIGN_KEYS = new Set([
+  "outbound_campaign_id",
+  "queue_name",
+  "outbound_campaign_status",
+  "campaign_contact_list",
+]);
+
+// Patch the campaign by mirroring what Zoom's UI does: GET the current
+// config, merge the requested fields on top, then PATCH the full result.
+// This sidesteps partial-body validation errors (code 100908) where Zoom
+// requires co-fields to ride along with whatever you're changing.
+export async function patchCampaign(
+  env: ZoomEnv,
+  id: string,
+  patch: Record<string, unknown>
+): Promise<void> {
+  const current = await getCampaign(env, id);
+
+  const writable: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(current)) {
+    if (READ_ONLY_CAMPAIGN_KEYS.has(k)) continue;
+    writable[k] = v;
+  }
+
+  const list = current.campaign_contact_list as
+    | Array<{ contact_list_id: string }>
+    | undefined;
+  if (list?.length) {
+    writable.campaign_contact_list_ids = list.map((c) => c.contact_list_id);
+  }
+
+  const merged = { ...writable, ...patch };
+  await zoomPatch(env, `/outbound_campaign/campaigns/${id}`, merged);
 }
 
 // ── Cleanup list + delete ──────────────────────────────────────────────────
