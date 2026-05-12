@@ -144,6 +144,39 @@ export default function PatchView() {
   const [runError, setRunError] = useState<string | null>(null);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
 
+  // Inspect a single campaign's full config (for debugging PATCH failures)
+  const [inspectLoading, setInspectLoading] = useState(false);
+  const [inspectData, setInspectData] = useState<unknown>(null);
+  const [inspectError, setInspectError] = useState<string | null>(null);
+
+  async function handleInspect() {
+    const first = Array.from(selected)[0];
+    if (!first) return;
+    setInspectLoading(true);
+    setInspectError(null);
+    setInspectData(null);
+    try {
+      const r = await fetch(`/api/diagnostic/campaign/${first}`);
+      const text = await r.text();
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        // If the response isn't JSON, surface the raw text so we can see
+        // whether we got HTML (SPA fallback) or some other error envelope.
+        parsed = { _raw: text.slice(0, 2000) };
+      }
+      if (!r.ok) {
+        setInspectError(`HTTP ${r.status}`);
+      }
+      setInspectData(parsed);
+    } catch (err) {
+      setInspectError((err as Error).message);
+    } finally {
+      setInspectLoading(false);
+    }
+  }
+
   useEffect(() => {
     fetch("/api/catalog")
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
@@ -361,6 +394,33 @@ export default function PatchView() {
                 />
               ))}
             </div>
+          </div>
+
+          <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide">
+                Inspect campaign
+              </p>
+              <button
+                onClick={handleInspect}
+                disabled={selected.size === 0 || inspectLoading}
+                className="text-xs px-2 py-1 rounded border border-slate-300 text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+              >
+                {inspectLoading ? "Loading…" : "GET first selected"}
+              </button>
+            </div>
+            {inspectError && (
+              <p className="text-xs text-red-700">{inspectError}</p>
+            )}
+            {inspectData ? (
+              <pre className="text-[11px] bg-slate-50 border border-slate-200 rounded-lg p-3 overflow-x-auto text-slate-700 max-h-72 whitespace-pre-wrap break-words">
+{JSON.stringify(inspectData, null, 2)}
+              </pre>
+            ) : (
+              <p className="text-[11px] text-slate-400 italic">
+                Select a campaign and click to dump its current Zoom config.
+              </p>
+            )}
           </div>
 
           <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-3">
