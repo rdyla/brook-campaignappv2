@@ -396,11 +396,18 @@ export async function getCampaign(
   return zoomGet(env, `${CC_BASE}/outbound_campaign/campaigns/${id}`);
 }
 
-// Read-only / derived fields that the GET endpoint returns but the PATCH
-// endpoint rejects. Includes the response-side aggregate `campaign_contact_list`
-// which we translate to its writable counterpart `campaign_contact_list_ids`.
+// Fields the GET endpoint returns but the PATCH endpoint won't accept on
+// merge-back. Includes:
+//   - read-only / derived (id, queue_name, status)
+//   - response-side aggregate `campaign_contact_list` → translated to its
+//     writable form `campaign_contact_list_ids`
+//   - `outbound_campaign_name`: Zoom server-side bug — PATCHing a campaign
+//     with its own current name fails with "Campaign name must be unique"
+//     because the validator counts the campaign itself as a collision.
+//     If the caller explicitly wants to rename, their patch wins via merge.
 const READ_ONLY_CAMPAIGN_KEYS = new Set([
   "outbound_campaign_id",
+  "outbound_campaign_name",
   "queue_name",
   "outbound_campaign_status",
   "campaign_contact_list",
