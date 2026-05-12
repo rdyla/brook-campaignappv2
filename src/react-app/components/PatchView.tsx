@@ -5,7 +5,10 @@ import type {
   PatchCampaignsResponse,
 } from "../types";
 
-const PATCH_CHUNK_SIZE = 50;
+// GET → merge → PATCH means 2 Zoom subrequests per campaign. Keep chunks
+// small so each Worker invocation stays well under the subrequest+CPU
+// budget even when the merged config is large.
+const PATCH_CHUNK_SIZE = 20;
 
 // A single field the user can toggle into the patch payload. The `build`
 // function receives the raw input value (string) and returns the JSON shape

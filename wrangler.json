@@ -14,7 +14,7 @@
 		"not_found_handling": "single-page-application"
 	},
 	"limits": {
-		"cpu_ms": 100,
-		"subrequests": 150
+		"cpu_ms": 30000,
+		"subrequests": 1000
 	}
 }

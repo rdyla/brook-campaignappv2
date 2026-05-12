@@ -216,7 +216,10 @@ app.post("/api/campaigns/patch", async (c) => {
     return c.json({ error: "Empty patch — nothing to update" }, 400);
   }
 
-  const concurrency = 8;
+  // Lower concurrency than the contact-list import (8) because each item
+  // here is two Zoom calls (GET + PATCH) and the merged PATCH body is much
+  // larger — keeps CPU bursts manageable.
+  const concurrency = 4;
   const results: PatchCampaignResult[] = new Array(ids.length);
   let nextIndex = 0;
   async function worker() {
