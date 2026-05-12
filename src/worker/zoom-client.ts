@@ -437,6 +437,16 @@ export async function patchCampaign(
     writable.campaign_contact_list_ids = list.map((c) => c.contact_list_id);
   }
 
+  // Zoom returns business_hour_id: "1" as a sentinel for "no campaign-level
+  // override" but the PATCH validator then rejects "1" as a missing business
+  // hour (error 5011). Drop both BH fields so the campaign's stored value
+  // stays as-is. Caller's patch wins via merge below if they actually want
+  // to set BH.
+  if (writable.business_hour_id === "1") {
+    delete writable.business_hour_id;
+    delete writable.business_hour_source;
+  }
+
   const merged = { ...writable, ...patch };
   await zoomPatch(env, `/outbound_campaign/campaigns/${id}`, merged);
 }
